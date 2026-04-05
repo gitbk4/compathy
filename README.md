@@ -25,11 +25,11 @@ Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/4
 
 ```bash
 # Global install (works in every project)
-git clone https://github.com/YOUR-USERNAME/context-compounder.git \
+git clone https://github.com/gitbk4/context-compounder.git \
   ~/.claude/skills/context-compounder
 
 # Or per-project
-git clone https://github.com/YOUR-USERNAME/context-compounder.git \
+git clone https://github.com/gitbk4/context-compounder.git \
   .claude/skills/context-compounder
 ```
 
