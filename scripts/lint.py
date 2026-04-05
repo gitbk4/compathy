@@ -36,7 +36,7 @@ BACKLINK_RE = re.compile(r"\[\[([^\[\]]+?)\]\]")
 CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`[^`]*`")
 REQUIRED_FRONTMATTER = ("type", "schema_version")
-VALID_TYPES = ("concept", "entity", "summary", "index", "log")
+VALID_TYPES = ("concept", "entity", "summary", "index", "log", "patterns")
 
 
 # ---------- flat-YAML parser ----------

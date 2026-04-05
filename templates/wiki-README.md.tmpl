@@ -1,6 +1,6 @@
 # wiki/ — Compiled Knowledge Base
 
-This directory is **LLM-owned**. It is produced by the `context-compounder` skill
+This directory is **LLM-owned**. It is produced by the `compathy` skill
 from the sources in `../raw/`.
 
 ## Quick tour for humans
@@ -10,12 +10,13 @@ from the sources in `../raw/`.
 - **`concepts/`** — encyclopedia-style articles on cross-cutting ideas.
 - **`entities/`** — one page per person, tool, service, or system.
 - **`summaries/`** — per-source summaries of documents in `raw/`.
+- **`patterns/`** — technical conventions: how code is written in this project.
 
 ## How the wiki stays current
 
 1. You drop new materials into `../raw/` (or add `.ref` files pointing to
    existing repo docs like `docs/adr/`).
-2. You run `/context-compounder` in Claude Code.
+2. You run `/compathy` in Claude Code.
 3. Claude detects changed sources via checksum diff, re-reads the affected
    raw files, and updates the wiki pages they touch.
 4. `scripts/lint.py` validates the result (backlinks, orphans, staleness).

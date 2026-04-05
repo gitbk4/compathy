@@ -19,7 +19,8 @@ context/
     ├── log.md         (append-only chronological record)
     ├── concepts/      (encyclopedia-style articles on ideas/topics)
     ├── entities/      (people, projects, services, systems, tools)
-    └── summaries/     (per-source summaries of raw/ documents)
+    ├── summaries/     (per-source summaries of raw/ documents)
+    └── patterns/      (technical conventions: how code is written here)
 ```
 
 ## Page Types
@@ -31,6 +32,7 @@ Every wiki page has a `type` field in its frontmatter. Valid types:
 | `concept` | `concepts/` | Cross-cutting idea or topic. Synthesizes multiple sources. |
 | `entity` | `entities/` | A specific thing (person, tool, repo, service, system). |
 | `summary` | `summaries/` | Summary of one raw/ source. |
+| `patterns` | `patterns/` | Technical conventions: how code is written in this project. |
 | `index` | `wiki/` | The catalog (index.md). |
 | `log` | `wiki/` | The change log (log.md). |
 
@@ -38,7 +40,7 @@ Every wiki page has a `type` field in its frontmatter. Valid types:
 
 Every page MUST have flat-YAML frontmatter between `---` delimiters. Required fields:
 
-- `type`: one of `concept`, `entity`, `summary`, `index`, `log`
+- `type`: one of `concept`, `entity`, `summary`, `patterns`, `index`, `log`
 - `schema_version`: integer matching this file's version
 
 Optional fields:
@@ -82,6 +84,28 @@ Inline wiki-links: `[[slug]]` or `[[slug|display text]]`.
 - Every `[[slug]]` MUST resolve to an existing page
 - Backlinks inside code fences are ignored by the linter
 - Self-references (page linking to itself) produce a warning
+
+## Patterns Pages
+
+Technical patterns capture **how code is written in this project**: naming,
+structure, idioms, testing conventions, error-handling style, framework usage,
+architectural boundaries. They exist so future Claude Code sessions can write
+code that matches the existing style on the first try.
+
+Written LAST in each compile — after concepts, entities, and summaries —
+because patterns are synthesized from everything else plus the actual code.
+
+Two sourcing modes:
+
+- **Codebase exists**: derive patterns by reading representative files. Cite
+  specific examples in `sources:` using file paths (e.g. `src/auth/login.ts`).
+- **No code yet**: ask the user what patterns they want to lock in, offering
+  options derived from the tech stack in other wiki pages (e.g. "React + Vite
+  detected — want functional components, container/presentational split,
+  React Query for data?").
+
+Typical page: `patterns/technical-patterns.md`. Large projects may split into
+`api-patterns.md`, `testing-patterns.md`, `ui-patterns.md`, etc.
 
 ## Entity Singletons
 

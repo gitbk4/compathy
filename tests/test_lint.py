@@ -116,7 +116,9 @@ class TestLintChecks(unittest.TestCase):
         self.td.cleanup()
 
     def _write_page(self, sub, slug, body="", type_=None):
-        type_ = type_ or sub.rstrip("s")  # concepts→concept, entities→entity
+        # concepts→concept, entities→entity, summaries→summary, patterns→patterns
+        default_type = "patterns" if sub == "patterns" else sub.rstrip("s")
+        type_ = type_ or default_type
         (self.wiki / sub / f"{slug}.md").write_text(_page(type_, slug, body))
 
     def _write_index(self, slugs):
@@ -129,6 +131,13 @@ class TestLintChecks(unittest.TestCase):
         self._write_page("concepts", "alpha", "see [[beta]]")
         self._write_page("concepts", "beta", "see [[alpha]]")
         self._write_index(["alpha", "beta"])
+        result = lint.lint(self.root)
+        self.assertEqual(result["summary"]["errors"], 0)
+
+    def test_patterns_page_is_valid(self):
+        self._write_page("patterns", "technical-patterns", "see [[alpha]]")
+        self._write_page("concepts", "alpha")
+        self._write_index(["alpha", "technical-patterns"])
         result = lint.lint(self.root)
         self.assertEqual(result["summary"]["errors"], 0)
 

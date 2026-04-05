@@ -30,7 +30,7 @@ class TestCreateStructure(unittest.TestCase):
             self.assertTrue(context_root(target).is_dir())
             self.assertTrue(raw_dir(target).is_dir())
             self.assertTrue(wiki_dir(target).is_dir())
-            for sub in ("concepts", "entities", "summaries"):
+            for sub in ("concepts", "entities", "summaries", "patterns"):
                 self.assertTrue((wiki_dir(target) / sub).is_dir())
                 self.assertTrue((wiki_dir(target) / sub / ".gitkeep").exists())
             self.assertTrue(schema_path(target).is_file())

@@ -1,4 +1,4 @@
-"""Shared path constants and helpers for context-compounder scripts.
+"""Shared path constants and helpers for compathy scripts.
 
 All scripts import from here to keep directory layout DRY.
 """
@@ -11,7 +11,7 @@ SCHEMA_FILE = "schema.md"
 INDEX_FILE = "index.md"
 LOG_FILE = "log.md"
 STATE_FILE = ".compile-state.json"
-WIKI_SUBDIRS = ("concepts", "entities", "summaries")
+WIKI_SUBDIRS = ("concepts", "entities", "summaries", "patterns")
 
 SCHEMA_VERSION = 1
 

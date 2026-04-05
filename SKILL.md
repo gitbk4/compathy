@@ -1,11 +1,11 @@
 ---
-name: context-compounder
-description: Jumpstart a Karpathy-style compiled knowledge base in any project. Reads raw sources, writes a structured markdown wiki with backlinks, index, and log. The wiki becomes compact, persistent context for all future Claude Code sessions.
+name: compathy
+description: Jumpstart a Karpathy-style compiled knowledge base in any project. Reads raw sources, writes a structured markdown wiki with backlinks, index, log, and technical patterns. The wiki becomes compact, persistent context for all future Claude Code sessions.
 ---
 
-# context-compounder
+# compathy
 
-You are orchestrating the `context-compounder` skill. Your job is to build (or
+You are orchestrating the `compathy` skill. Your job is to build (or
 update) a compiled markdown wiki at `context/` in the current project.
 
 **Concept** (Karpathy, April 2026): instead of RAG over raw chunks, you read
@@ -38,9 +38,9 @@ from the path of this file.
 python3 {skill_dir}/scripts/scaffold.py --target . --project-name "<name>"
 ```
 
-This creates `context/{raw/, wiki/{concepts,entities,summaries}/, schema.md,
-wiki/{index.md, log.md, README.md}, raw/README.md}`. It refuses to clobber
-an existing `context/`.
+This creates `context/{raw/, wiki/{concepts,entities,summaries,patterns}/,
+schema.md, wiki/{index.md, log.md, README.md}, raw/README.md}`. It refuses
+to clobber an existing `context/`.
 
 ### 1b. Interview the user (use AskUserQuestion)
 
@@ -91,6 +91,8 @@ Write pages using the `Write` tool. For each source:
 3. **Entity pages** in `context/wiki/entities/` for people, tools, services,
    systems (aim for 2-5 in quick, 5-15 in deep).
 
+**Do NOT write patterns pages yet.** Patterns are written LAST (see 1f-bis).
+
 Every page needs flat-YAML frontmatter (see `context/schema.md`):
 
 ```markdown
@@ -113,10 +115,67 @@ Backlink rules:
 - Every backlink MUST point to a page that exists (or will exist by end of compile)
 - Aim for 2-5 backlinks per concept page
 
+### 1f-bis. Write technical patterns (LAST, after all other pages)
+
+Patterns describe **how code is written in this project**. They are the
+payoff of compathy: future Claude Code sessions read them first and match
+the existing style on the first try.
+
+Write AFTER concepts/entities/summaries are done — patterns synthesize
+them plus the actual code.
+
+**Branch on whether code exists:**
+
+```bash
+# Heuristic: any source files outside context/, docs/, node_modules/, .git/
+```
+
+Use `bootstrap.py` output (file_tree) to decide. If you see `.ts`, `.tsx`,
+`.py`, `.go`, `.rs`, `.rb`, `.java`, `.kt`, `.swift` files (not just configs,
+READMEs, and docs), treat as **code-exists**.
+
+#### Mode A — Code exists: derive from the codebase
+
+Read 5-15 representative files spanning the main directories (auth, api,
+components, models, tests, etc.). Synthesize technical patterns into
+`context/wiki/patterns/technical-patterns.md`. Cover at minimum:
+
+- Language / framework / runtime (what's actually imported)
+- Project structure (top-level dirs and their roles)
+- Naming conventions (files, functions, types, constants)
+- State management / data layer (how data flows)
+- Error handling style
+- Testing conventions (framework, file location, structure)
+- Any project-specific idioms you notice (e.g. "always use `Result<T>`",
+  "all routes go through `middleware/auth.ts`")
+
+Cite specific files in `sources:` (e.g. `sources: [src/auth/login.ts, src/routes/api.ts]`).
+Also set `related_paths:` so staleness lint tracks these over time.
+
+#### Mode B — No code yet: ask the user
+
+Ask the user (via AskUserQuestion) whether they want to lock in patterns
+now. Offer 3-5 options derived from the tech stack you observed in the
+wiki's concepts/entities pages or the project's manifests. Example:
+
+> "I see this is a React + Vite + Tailwind project with Prisma on the backend.
+> Want to lock in coding patterns now? Pick any that apply:
+>
+> - **Functional components only** (no class components)
+> - **Container/presentational split** for React
+> - **RTK Query for data** (vs SWR, React Query, plain fetch)
+> - **Prisma repositories** wrapped behind a service layer
+> - **Yup for form validation**
+> - **Defer** — I'll establish patterns after the first real code lands"
+
+If they pick options, write `patterns/technical-patterns.md` documenting
+their choices (cite sources as `[user-interview]`). If they defer, skip —
+leave `patterns/` empty and note in the log: "patterns deferred until code exists".
+
 ### 1g. Update the index (authoritative catalog)
 
-Edit `context/wiki/index.md`. Under each category (Concepts / Entities / Summaries),
-add one bullet per page:
+Edit `context/wiki/index.md`. Under each category (Concepts / Entities /
+Summaries / Patterns), add one bullet per page:
 
 ```markdown
 ## Concepts
@@ -182,6 +241,16 @@ For each changed raw source:
 
 Touch 10-15 pages per change is normal. You are doing bookkeeping.
 
+### 2b-bis. Refresh patterns (last, as always)
+
+If `patterns/` is empty and the codebase now exists (wasn't true at INIT),
+this is your chance to create `patterns/technical-patterns.md` — derive
+from the code (Mode A in 1f-bis).
+
+If `patterns/` has pages and recent commits touched tracked `related_paths`
+(staleness check will catch this), refresh the patterns page to reflect the
+current idioms. Patterns drift faster than concepts.
+
 ### 2c. Update index and log
 
 - Add/remove entries in `index.md` to match wiki/ state.
@@ -223,15 +292,17 @@ refresh them?" If yes, for each stale page:
 7. **Fix lint errors before finishing.** Report warnings but don't require fixes.
 8. **Token budgets are guidance.** If the user asked for quick mode, don't
    write 40 pages.
+9. **Patterns are written LAST.** They synthesize the rest of the wiki plus
+   the actual code. Don't write them before concepts/entities/summaries.
 
 ## When You're Done
 
 Print a compact summary:
 
 ```
-context-compounder: <INIT|RECOMPILE> complete
-  pages: <N> (concepts: X, entities: Y, summaries: Z)
+compathy: <INIT|RECOMPILE> complete
+  pages: <N> (concepts: X, entities: Y, summaries: Z, patterns: P)
   backlinks: <M>
   lint: <E> errors, <W> warnings
-  next: run `/context-compounder` again whenever you add to raw/
+  next: run `/compathy` again whenever you add to raw/
 ```

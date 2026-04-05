@@ -75,7 +75,7 @@ to relevant pages. Synthesis is pre-computed and compounds.
 ## Data flow: RECOMPILE
 
 ```
- user: /context-compounder
+ user: /compathy
     │
     ▼
  Claude reads SKILL.md

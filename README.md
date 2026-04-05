@@ -1,4 +1,4 @@
-# context-compounder
+# compathy
 
 > Jumpstart a Karpathy-style compiled knowledge base in any project.
 > No RAG. No vector DB. Just markdown, backlinks, and a self-healing wiki.
@@ -25,12 +25,12 @@ Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/4
 
 ```bash
 # Global install (works in every project)
-git clone https://github.com/gitbk4/context-compounder.git \
-  ~/.claude/skills/context-compounder
+git clone https://github.com/gitbk4/compathy.git \
+  ~/.claude/skills/compathy
 
 # Or per-project
-git clone https://github.com/gitbk4/context-compounder.git \
-  .claude/skills/context-compounder
+git clone https://github.com/gitbk4/compathy.git \
+  .claude/skills/compathy
 ```
 
 Update later with `git pull`.
@@ -40,7 +40,7 @@ Update later with `git pull`.
 In any project, ask Claude Code:
 
 ```
-/context-compounder
+/compathy
 ```
 
 **First run (INIT)**: scaffolds `context/`, interviews you, bootstraps from
