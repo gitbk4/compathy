@@ -1,5 +1,9 @@
 # Architecture
 
+Compathy works in **Claude Code** and **Google Antigravity** — a single
+SKILL.md package drives both, since the skill formats align on YAML
+frontmatter (`name` + `description`). Only the install path differs.
+
 ## The concept (Karpathy, April 2026)
 
 Traditional RAG retrieves raw chunks at query time via vector similarity.

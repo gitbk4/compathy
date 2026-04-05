@@ -15,29 +15,62 @@ and compiles a structured markdown wiki at `context/` with:
 - **Log** — append-only chronological record of every compile/lint pass
 - **Backlinks** — wiki-style `[[slug]]` cross-references
 
-The wiki compounds. Every future Claude Code session reads the index first and
+The wiki compounds. Every future agent session reads the index first and
 jumps to relevant pages — no re-grounding, no re-reading the whole codebase.
+
+Works with **Claude Code** and **Google Antigravity** (same SKILL.md, same scripts).
 
 Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 (April 2026).
 
 ## Install
 
-```bash
-# Global install (works in every project)
-git clone https://github.com/gitbk4/compathy.git \
-  ~/.claude/skills/compathy
+Clone once, then use the installer to symlink into whichever agentic IDE
+you use. One target per invocation — pick `--claude` or `--antigravity`.
 
-# Or per-project
-git clone https://github.com/gitbk4/compathy.git \
-  .claude/skills/compathy
+```bash
+git clone https://github.com/gitbk4/compathy.git ~/Code/compathy
+cd ~/Code/compathy
 ```
 
-Update later with `git pull`.
+### Claude Code
+
+```bash
+python3 scripts/install.py --claude              # global (~/.claude/skills/compathy)
+python3 scripts/install.py --claude --workspace  # current project (.claude/skills/compathy)
+```
+
+Invoke with `/compathy`.
+
+### Google Antigravity
+
+```bash
+python3 scripts/install.py --antigravity              # global (~/.gemini/antigravity/skills/compathy)
+python3 scripts/install.py --antigravity --workspace  # current project (.agent/skills/compathy)
+```
+
+Compathy installs into Antigravity's **Skills** slot (not Rules, not Workflows).
+Its description field acts as the trigger phrase — Antigravity loads the skill
+only when relevant, keeping your agent context clean.
+
+### Update or uninstall
+
+```bash
+cd ~/Code/compathy && git pull          # update (symlink means all tools see it)
+python3 scripts/install.py --claude --uninstall
+python3 scripts/install.py --antigravity --uninstall
+```
+
+### Windows users
+
+The installer requires up-to-date Windows + Developer Mode for symlink
+support. The installer will prompt you to confirm you've done this before
+proceeding. If symlinks fail, it falls back to a one-time directory copy
+(you'll need to re-run after each `git pull`).
 
 ## Use
 
-In any project, ask Claude Code:
+In any project, invoke in your agentic IDE:
 
 ```
 /compathy
@@ -107,7 +140,7 @@ no absolute paths).
 
 - Python 3.10+
 - Git (optional, but unlocks history-bootstrap and staleness detection)
-- Claude Code
+- An agentic IDE that loads SKILL.md packages (Claude Code, Antigravity)
 
 ## License
 

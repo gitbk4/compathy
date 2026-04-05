@@ -1,6 +1,6 @@
 ---
 name: compathy
-description: Jumpstart a Karpathy-style compiled knowledge base in any project. Reads raw sources, writes a structured markdown wiki with backlinks, index, log, and technical patterns. The wiki becomes compact, persistent context for all future Claude Code sessions.
+description: Jumpstart a Karpathy-style compiled knowledge base in any project. Reads raw sources, writes a structured markdown wiki with backlinks, index, log, and technical patterns. The wiki becomes compact, persistent context for all future agent sessions.
 ---
 
 # compathy
@@ -42,9 +42,11 @@ This creates `context/{raw/, wiki/{concepts,entities,summaries,patterns}/,
 schema.md, wiki/{index.md, log.md, README.md}, raw/README.md}`. It refuses
 to clobber an existing `context/`.
 
-### 1b. Interview the user (use AskUserQuestion)
+### 1b. Interview the user
 
-Ask three questions, one at a time:
+Ask three questions, one at a time (use your harness's interactive-prompt
+mechanism — e.g. AskUserQuestion in Claude Code, or a plain question in
+Antigravity):
 
 1. **Project purpose** — "In one sentence, what does this project do?"
 2. **Context sources** — "What should I compile into the wiki? Pick any that apply:
@@ -118,7 +120,7 @@ Backlink rules:
 ### 1f-bis. Write technical patterns (LAST, after all other pages)
 
 Patterns describe **how code is written in this project**. They are the
-payoff of compathy: future Claude Code sessions read them first and match
+payoff of compathy: future agent sessions read them first and match
 the existing style on the first try.
 
 Write AFTER concepts/entities/summaries are done — patterns synthesize
@@ -154,7 +156,7 @@ Also set `related_paths:` so staleness lint tracks these over time.
 
 #### Mode B — No code yet: ask the user
 
-Ask the user (via AskUserQuestion) whether they want to lock in patterns
+Ask the user interactively whether they want to lock in patterns
 now. Offer 3-5 options derived from the tech stack you observed in the
 wiki's concepts/entities pages or the project's manifests. Example:
 

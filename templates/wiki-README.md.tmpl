@@ -16,7 +16,7 @@ from the sources in `../raw/`.
 
 1. You drop new materials into `../raw/` (or add `.ref` files pointing to
    existing repo docs like `docs/adr/`).
-2. You run `/compathy` in Claude Code.
+2. You run `/compathy` in your agentic IDE (Claude Code, Antigravity, etc.).
 3. Claude detects changed sources via checksum diff, re-reads the affected
    raw files, and updates the wiki pages they touch.
 4. `scripts/lint.py` validates the result (backlinks, orphans, staleness).
