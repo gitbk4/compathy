@@ -41,12 +41,14 @@ TOOL_BASES = {
 
 
 def resolve_dest(tool: str, scope: str, symlink_name: str) -> Path:
+    """Resolve the destination path for the skill."""
     anchor_kind, base = TOOL_BASES[(tool, scope)]
     anchor = Path.home() if anchor_kind == "home" else Path.cwd()
     return anchor / base / symlink_name
 
 
 def resolve_src(skill_key: str) -> Path:
+    """Resolve the source directory for the skill."""
     _, rel = SKILLS[skill_key]
     return (REPO_ROOT / rel).resolve()
 
@@ -69,6 +71,7 @@ def windows_update_gate() -> None:
 
 
 def make_link(src: Path, dest: Path) -> str:
+    """Create a symlink or copy if symlinks are restricted."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.symlink(src, dest, target_is_directory=True)
@@ -81,6 +84,7 @@ def make_link(src: Path, dest: Path) -> str:
 
 
 def uninstall_one(dest: Path) -> bool:
+    """Uninstall a specific skill from the destination."""
     if not dest.exists() and not dest.is_symlink():
         print(f"  not installed: {dest}")
         return True
@@ -97,9 +101,10 @@ def uninstall_one(dest: Path) -> bool:
 
 
 def install_one(src: Path, dest: Path, skill_name: str) -> bool:
+    """Install a specific skill from source to destination."""
     if dest.exists() or dest.is_symlink():
         print(f"  SKIP {skill_name}: already exists at {dest}", file=sys.stderr)
-        print(f"  Run with --uninstall first.", file=sys.stderr)
+        print("  Run with --uninstall first.", file=sys.stderr)
         return False
 
     # Verify source has a SKILL.md (except repo root which has it at top level)
@@ -114,6 +119,7 @@ def install_one(src: Path, dest: Path, skill_name: str) -> bool:
 
 
 def run_install(tool: str, scope: str, skill_keys: list) -> int:
+    """Run the installation process for the specified tool and scope."""
     windows_update_gate()
     print(f"Installing to {tool} ({scope}):")
     ok = True
@@ -124,16 +130,17 @@ def run_install(tool: str, scope: str, skill_keys: list) -> int:
         if not install_one(src, dest, name):
             ok = False
     if ok:
-        print(f"\nTry it:")
+        print("\nTry it:")
         if tool == "claude":
             names = [SKILLS[k][0] for k in skill_keys]
             print(f"  In Claude Code, run: /{names[0]}")
         else:
-            print(f"  In Antigravity, invoke via the skill description trigger")
+            print("  In Antigravity, invoke via the skill description trigger")
     return 0 if ok else 1
 
 
 def run_uninstall(tool: str, scope: str, skill_keys: list) -> int:
+    """Run the uninstallation process for the specified tool and scope."""
     print(f"Uninstalling from {tool} ({scope}):")
     ok = True
     for key in skill_keys:
@@ -145,6 +152,7 @@ def run_uninstall(tool: str, scope: str, skill_keys: list) -> int:
 
 
 def main() -> int:
+    """Main entry point for the installation script."""
     ap = argparse.ArgumentParser(
         description="Install compathy skills for Claude Code or Antigravity",
         formatter_class=argparse.RawDescriptionHelpFormatter,

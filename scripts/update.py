@@ -25,6 +25,7 @@ def _git(args: list, cwd: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
 
@@ -51,6 +52,7 @@ def _has_remote() -> bool:
         return False
 
 
+# pylint: disable=too-many-return-statements
 def update() -> dict:
     """Attempt to auto-update. Returns a status dict.
 
@@ -140,6 +142,7 @@ def update() -> dict:
 
 
 def main() -> int:
+    """Main entry point for the update script."""
     result = update()
     action = result["action"]
 

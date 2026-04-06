@@ -33,21 +33,37 @@ MANIFEST_NAMES = (
     "Makefile",
 )
 README_CANDIDATES = ("README.md", "README.rst", "README.txt", "readme.md", "README")
-IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"}
+IGNORE_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".cache",
+}
 
 
 def _run_git(args, cwd: Path):
     try:
         return subprocess.run(
-            ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
-    except FileNotFoundError:
-        raise RuntimeError("git not found on PATH")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"git {args[0]} timed out")
+    except FileNotFoundError as exc:
+        raise RuntimeError("git not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git {args[0]} timed out") from exc
 
 
 def is_git_repo(root: Path) -> bool:
+    """Check if the provided path is within a git repository."""
     try:
         r = _run_git(["rev-parse", "--show-toplevel"], root)
         return r.returncode == 0
@@ -56,6 +72,7 @@ def is_git_repo(root: Path) -> bool:
 
 
 def collect_git_log(root: Path, limit: int = GIT_LOG_LIMIT) -> list:
+    """Retrieve the most recent git log entries up to a given limit."""
     if not is_git_repo(root):
         return []
     r = _run_git(
@@ -67,6 +84,7 @@ def collect_git_log(root: Path, limit: int = GIT_LOG_LIMIT) -> list:
 
 
 def collect_file_tree(root: Path, max_depth: int = TREE_DEPTH) -> list:
+    """Collect the file tree of the project respecting git ignores or depth."""
     if is_git_repo(root):
         r = _run_git(["ls-files"], root)
         if r.returncode == 0:
@@ -104,6 +122,7 @@ def _read_truncated(p: Path, cap: int) -> str:
 
 
 def collect_readmes(root: Path) -> list:
+    """Gather content of key readme files in the root directory."""
     seen = set()
     results = []
     for name in README_CANDIDATES:
@@ -120,6 +139,7 @@ def collect_readmes(root: Path) -> list:
 
 
 def collect_manifests(root: Path) -> dict:
+    """Gather content of typical project manifests (like package.json)."""
     out = {}
     for name in MANIFEST_NAMES:
         p = root / name
@@ -129,6 +149,7 @@ def collect_manifests(root: Path) -> dict:
 
 
 def emit_bootstrap(root: Path) -> dict:
+    """Generate the full bootstrap dictionary for a given project root."""
     return {
         "is_git_repo": is_git_repo(root),
         "git_log": collect_git_log(root),
@@ -145,6 +166,7 @@ def emit_bootstrap(root: Path) -> dict:
 
 
 def main() -> int:
+    """Main entry point for bootstrap script."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", default=".", help="project root (default: cwd)")
     args = ap.parse_args()

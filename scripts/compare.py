@@ -18,7 +18,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bootstrap import collect_file_tree, collect_manifests, collect_readmes, emit_bootstrap  # noqa: E402
+# pylint: disable=wrong-import-position
+from bootstrap import (  # noqa: E402
+    collect_file_tree,
+    collect_manifests,
+    collect_readmes,
+)
 from lint import iter_wiki_pages, parse_frontmatter  # noqa: E402
 from paths import context_root, wiki_dir  # noqa: E402
 
@@ -74,6 +79,7 @@ def read_wiki_pages(wiki_root: Path) -> dict:
     Returns dict with keys: entities, concepts, summaries, patterns.
     Each value is a list of {slug, frontmatter, backlinks, path}.
     """
+    # pylint: disable=import-outside-toplevel
     from lint import parse_backlinks  # noqa: E402
 
     result = {"entities": [], "concepts": [], "summaries": [], "patterns": []}
@@ -194,6 +200,7 @@ def compare(current_root: Path, target_root: Path) -> dict:
 
 
 def main() -> int:
+    """Main entry point for compare script."""
     ap = argparse.ArgumentParser(
         description="Compare two projects for compathy-compare skill"
     )

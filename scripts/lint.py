@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# pylint: disable=wrong-import-position
 from paths import (  # noqa: E402
     INDEX_FILE,
     LOG_FILE,
@@ -99,6 +100,7 @@ def _parse_value(val: str, lineno: int):
     return _scalar(val)
 
 
+# pylint: disable=too-many-return-statements
 def _scalar(v: str):
     v = v.strip()
     if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
@@ -156,6 +158,7 @@ def iter_wiki_pages(wiki_root: Path):
 
 
 def read_page(path: Path):
+    """Read a markdown page and parse its frontmatter and body."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -170,6 +173,7 @@ def read_page(path: Path):
 # ---------- checks ----------
 
 def check_backlinks(wiki_root: Path) -> list:
+    """Check all wiki pages for self-backlinks and broken backlinks."""
     errors = []
     slugs = set()
     pages = []
@@ -177,7 +181,7 @@ def check_backlinks(wiki_root: Path) -> list:
         slugs.add(slug)
         pages.append((slug, path))
     for slug, path in pages:
-        fm, body, err = read_page(path)
+        _, body, err = read_page(path)
         if err:
             continue
         for target in parse_backlinks(body):
@@ -211,6 +215,7 @@ def parse_index_entries(index_text: str) -> set:
 
 
 def check_orphans(wiki_root: Path) -> list:
+    """Check for orphaned pages or index staleness."""
     issues = []
     idx_path = wiki_root / INDEX_FILE
     if not idx_path.exists():
@@ -245,7 +250,8 @@ def check_orphans(wiki_root: Path) -> list:
     return issues
 
 
-def check_schema_compliance(wiki_root: Path, schema_file: Path) -> list:
+def check_schema_compliance(wiki_root: Path) -> list:
+    """Verify that all wiki pages comply with the defined schema."""
     issues = []
     # Slug naming + required frontmatter
     for slug, path in iter_wiki_pages(wiki_root):
@@ -305,6 +311,7 @@ def check_schema_compliance(wiki_root: Path, schema_file: Path) -> list:
     return issues
 
 
+# pylint: disable=too-many-locals, too-many-branches
 def check_staleness(wiki_root: Path, target_root: Path) -> list:
     """For each page with related_paths, compare page mtime to git log."""
     issues = []
@@ -316,6 +323,7 @@ def check_staleness(wiki_root: Path, target_root: Path) -> list:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return issues
@@ -379,6 +387,7 @@ def check_staleness(wiki_root: Path, target_root: Path) -> list:
 # ---------- report ----------
 
 def lint(target: Path) -> dict:
+    """Run all linter checks on the target wiki directory."""
     target = Path(target).resolve()
     wiki_root = wiki_dir(target)
     if not wiki_root.exists():
@@ -390,7 +399,7 @@ def lint(target: Path) -> dict:
     all_issues = []
     all_issues.extend(check_backlinks(wiki_root))
     all_issues.extend(check_orphans(wiki_root))
-    all_issues.extend(check_schema_compliance(wiki_root, schema_path(target)))
+    all_issues.extend(check_schema_compliance(wiki_root))
     all_issues.extend(check_staleness(wiki_root, target))
 
     errors = [i for i in all_issues if i.get("severity") == "error"]
@@ -416,6 +425,7 @@ def _human_report(result: dict) -> str:
 
 
 def main() -> int:
+    """Main entry point for the linter script."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", default=".")
     ap.add_argument(

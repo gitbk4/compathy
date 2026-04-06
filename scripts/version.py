@@ -8,6 +8,7 @@ VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
 
 
 def get_version() -> str:
+    """Return the current compathy version string from the VERSION file."""
     try:
         return VERSION_FILE.read_text(encoding="utf-8").strip()
     except OSError:

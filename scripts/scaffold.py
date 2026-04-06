@@ -16,6 +16,7 @@ from pathlib import Path
 # Allow running as `python scripts/scaffold.py` or as a module.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# pylint: disable=wrong-import-position
 from paths import (  # noqa: E402
     INDEX_FILE,
     LOG_FILE,
@@ -47,6 +48,7 @@ def render_template(name: str, ctx: dict) -> str:
 
 
 def create_structure(target: Path, project_name: str = "") -> None:
+    """Create the context directory structure and write initial templates."""
     target = Path(target)
     if target.exists() and not target.is_dir():
         raise NotADirectoryError(f"Target must be a directory: {target}")
@@ -92,6 +94,7 @@ def create_structure(target: Path, project_name: str = "") -> None:
 
 
 def main() -> int:
+    """Main entry point for the scaffold script."""
     ap = argparse.ArgumentParser(
         description="Scaffold context/ structure in target project"
     )

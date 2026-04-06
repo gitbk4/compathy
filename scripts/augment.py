@@ -16,7 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from compare import detect_tech_stack, read_project_data  # noqa: E402
+# pylint: disable=wrong-import-position
+from compare import read_project_data  # noqa: E402
 from paths import context_root, raw_dir  # noqa: E402
 
 
@@ -45,6 +46,7 @@ def analyze_target(current_root: Path, target_root: Path) -> dict:
     target = read_project_data(target_root, require_wiki=False)
 
     # Count current project's pages for reference
+    # pylint: disable=import-outside-toplevel
     from compare import read_wiki_pages  # noqa: E402
     from paths import wiki_dir  # noqa: E402
 
@@ -72,6 +74,7 @@ def analyze_target(current_root: Path, target_root: Path) -> dict:
 
 
 def main() -> int:
+    """Main entry point for augment script."""
     ap = argparse.ArgumentParser(
         description="Analyze target project for compathy-augment skill"
     )
