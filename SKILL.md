@@ -15,9 +15,19 @@ Future sessions skim the index and jump to relevant pages — no re-grounding.
 
 ---
 
-## Phase 0 — Detect Mode
+## Phase 0 — Auto-update + Detect Mode
 
-Run the mode detector:
+First, pull the latest version from GitHub:
+
+```bash
+python3 {skill_dir}/scripts/update.py
+```
+
+This runs `git pull --ff-only` in the compathy repo. If it succeeds, it
+prints the version change. If it fails (network, dirty tree, copy-install),
+it warns and continues — never blocks the skill.
+
+Then detect mode:
 
 ```bash
 python3 {skill_dir}/scripts/scaffold.py --target . --check
@@ -302,9 +312,15 @@ refresh them?" If yes, for each stale page:
 Print a compact summary:
 
 ```
-compathy: <INIT|RECOMPILE> complete
+compathy v<version>: <INIT|RECOMPILE> complete
   pages: <N> (concepts: X, entities: Y, summaries: Z, patterns: P)
   backlinks: <M>
   lint: <E> errors, <W> warnings
   next: run `/compathy` again whenever you add to raw/
+```
+
+Get the version by running:
+
+```bash
+python3 {skill_dir}/scripts/version.py
 ```

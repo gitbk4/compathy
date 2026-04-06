@@ -18,7 +18,15 @@ The current project is implicitly "Project A". The path argument is "Project B".
 
 ---
 
-## Phase 0 — Validate
+## Phase 0 — Auto-update + Validate
+
+First, pull the latest version from GitHub:
+
+```bash
+python3 {skill_dir}/../../scripts/update.py
+```
+
+Then validate:
 
 1. Confirm the current project has a compathy wiki at `context/wiki/`.
    If not, tell the user: "Run `/compathy` first to create a wiki for this
