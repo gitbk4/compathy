@@ -1,6 +1,10 @@
 ---
 name: compathy
 description: Jumpstart a Karpathy-style compiled knowledge base in any project. Reads raw sources, writes a structured markdown wiki with backlinks, index, log, and technical patterns. The wiki becomes compact, persistent context for all future agent sessions.
+metadata:
+  dependencies: []
+  engine: memento-skills
+  engine_repo: https://github.com/Memento-Teams/Memento-Skills
 ---
 
 # compathy
@@ -13,11 +17,18 @@ sources and WRITE a structured wiki with summaries, cross-linked concept pages,
 and an index. The wiki is a compounding, git-versioned, human-readable artifact.
 Future sessions skim the index and jump to relevant pages — no re-grounding.
 
+**Engine**: compathy is a [Memento-Skills](https://github.com/Memento-Teams/Memento-Skills)
+compatible playbook. Every context improvement runs through Memento-Skills'
+read → execute → reflect → write loop. If `memento` is installed, the skill
+can also be invoked directly via `memento agent`.
+
 ---
 
 ## Phase 0 — Auto-update + Detect Mode
 
-First, pull the latest version from GitHub:
+### Phase 0a — Self-update
+
+Pull the latest compathy from GitHub:
 
 ```bash
 python3 {skill_dir}/scripts/update.py
@@ -26,6 +37,25 @@ python3 {skill_dir}/scripts/update.py
 This runs `git pull --ff-only` in the compathy repo. If it succeeds, it
 prints the version change. If it fails (network, dirty tree, copy-install),
 it warns and continues — never blocks the skill.
+
+### Phase 0b — Sync Memento-Skills
+
+Memento-Skills is the engine for this wiki's maintenance. Check for updates:
+
+```bash
+python3 {skill_dir}/scripts/memento_sync.py
+```
+
+This checks GitHub for the latest Memento-Skills release and compares it to the
+locally installed version. It writes any new version to `{skill_dir}/MEMENTO_VERSION`.
+
+- If an **update is available**, the script prints install instructions to stderr.
+  Upgrade with: `pip install -e git+https://github.com/Memento-Teams/Memento-Skills.git`
+- If **not installed**, surface the install note to the user but continue — the skill
+  works without Memento-Skills installed; it just won't use the reflection loop.
+- If the check **fails** (network offline), continue silently.
+
+### Phase 0c — Detect Mode
 
 Then detect mode:
 
@@ -312,15 +342,17 @@ refresh them?" If yes, for each stale page:
 Print a compact summary:
 
 ```
-compathy v<version>: <INIT|RECOMPILE> complete
-  pages: <N> (concepts: X, entities: Y, summaries: Z, patterns: P)
+compathy v<version>  [memento-skills <memento_version>]
+  mode:      <INIT|RECOMPILE>
+  pages:     <N> (concepts: X, entities: Y, summaries: Z, patterns: P)
   backlinks: <M>
-  lint: <E> errors, <W> warnings
-  next: run `/compathy` again whenever you add to raw/
+  lint:      <E> errors, <W> warnings
+  next:      run `/compathy` again whenever you add to raw/
 ```
 
-Get the version by running:
+Get versions by running:
 
 ```bash
-python3 {skill_dir}/scripts/version.py
+python3 {skill_dir}/scripts/version.py           # compathy version
+cat {skill_dir}/MEMENTO_VERSION                  # last-known memento-skills version
 ```
