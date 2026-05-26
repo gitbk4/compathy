@@ -178,6 +178,52 @@ simple regex.
 | Orphan page | lint warning with hint |
 | Stale page | lint warning with commit count; heal offered |
 
+## Why not router-mode? (Killed 2026-05-22)
+
+An earlier proposal partitioned `wiki/` into four cell-index files under
+`wiki/cells/{concepts,entities,summaries,patterns}.md` so an agent could load
+only the cell-index it needed. `scripts/router_dryrun.py` was built as the
+kill-criterion gate: percentage savings vs flat ≥ 40%, absolute savings ≥
+500 tokens, cross-section backlink ratio ≤ 25%, measured on a wiki of ≥ 80
+pages.
+
+On a 126-page real wiki (`career-ops`), the gate failed every condition:
+
+| metric | observed | required |
+|---|---|---|
+| percentage savings | 3.3% | ≥ 40% |
+| absolute savings | 75 tokens | ≥ 500 |
+| cross-section backlink ratio | 63.7% | ≤ 25% |
+| median session breadth | 3-of-4 cells | — |
+
+The root cause is structural, not tunable. Pages link freely across the
+four page-types (a summary references the concepts and entities it covers;
+a pattern references its target entities), so a partition that mirrors page
+types is fighting how knowledge actually clusters. With 3-of-4 cells touched
+per typical session, router-mode wouldn't have shrunk the loaded context
+even if the ratio were better.
+
+The diagnostic stays in tree (`scripts/router_dryrun.py`) so future
+partition-shaped proposals have to clear the same bar against the same
+real wikis.
+
+### What replaces it
+
+The path compathy already ships — LLM reads `index.md` + summaries, picks
+slugs, loads pages — *is* semantic search, with the LLM as the matcher.
+Flat indexes at observed scale (2.3 K tokens on 126 pages) are not a
+context-budget problem on modern models. When a real user wiki hits the
+token wall (rough estimate: ≥ 500 pages, ≥ 10 K-token flat index), the
+escape hatch is **opt-in embedding-based pre-filtering** via
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, with vectors cached in
+`.compile-state.json` keyed by content hash. Not BM25 — keyword search is
+the wrong tool when the consumer is an LLM.
+
+Until that threshold is observed in the wild, no new partition, no new
+search index, no new runtime dependency. The MCP server may add
+`wiki_page(slug)` → body + 1-hop backlink neighbors so the LLM gets graph
+context without re-querying; that's the only new surface area.
+
 ## Why not tokenize-and-vector-index?
 
 - Vector DB adds a runtime dependency (Pinecone, Chroma, pgvector, etc.)

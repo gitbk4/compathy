@@ -128,17 +128,32 @@ def compute_entry_checksum(
     return compute_checksum(full)
 
 
+def _default_state() -> dict:
+    """Return a fresh compile-state dict.
+
+    The ``embeddings`` slot is reserved for opt-in embedding-based
+    pre-filtering (see ARCHITECTURE.md "What replaces it"). Today it is
+    always None; populated states will carry an index dict pointing at a
+    sibling vectors file. State files written by older versions that
+    lack the key are backfilled to None on load so callers can rely on
+    the shape.
+    """
+    return {"version": SCHEMA_VERSION, "entries": {}, "embeddings": None}
+
+
 def load_state(state_file: Path) -> dict:
     """Load the compilation state JSON file."""
     if not state_file.exists():
-        return {"version": SCHEMA_VERSION, "entries": {}}
+        return _default_state()
     try:
         data = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or "entries" not in data:
-            return {"version": SCHEMA_VERSION, "entries": {}}
+            return _default_state()
+        if "embeddings" not in data:
+            data["embeddings"] = None
         return data
     except (json.JSONDecodeError, OSError):
-        return {"version": SCHEMA_VERSION, "entries": {}}
+        return _default_state()
 
 
 def save_state(state_file: Path, state: dict) -> None:

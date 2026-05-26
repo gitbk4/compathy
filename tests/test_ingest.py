@@ -193,6 +193,36 @@ class TestStateIO(unittest.TestCase):
             leftovers = list(state_path(root).parent.glob(".state-*.tmp"))
             self.assertEqual(leftovers, [])
 
+    def test_fresh_state_has_embeddings_slot(self):
+        """No state file yet → default dict carries embeddings=None,
+        reserved for future opt-in embedding-based pre-filtering."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _git_init(root)
+            scaffold.create_structure(root, project_name="x")
+            loaded = ingest.load_state(state_path(root))
+            self.assertIn("embeddings", loaded)
+            self.assertIsNone(loaded["embeddings"])
+
+    def test_older_state_backfills_embeddings_slot(self):
+        """A state file written by an older version (no embeddings key)
+        is backfilled to None on load so callers can rely on the shape
+        without a one-shot migration."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _git_init(root)
+            scaffold.create_structure(root, project_name="x")
+            state_path(root).write_text(
+                '{"version": 1, "entries": '
+                '{"a.md": {"kind": "file", "sha256": "abc"}}}',
+                encoding="utf-8",
+            )
+            loaded = ingest.load_state(state_path(root))
+            self.assertIn("embeddings", loaded)
+            self.assertIsNone(loaded["embeddings"])
+            # Existing entries are preserved (no clobber).
+            self.assertEqual(loaded["entries"]["a.md"]["sha256"], "abc")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,7 +75,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # pylint: disable=wrong-import-position
-from lint import parse_frontmatter  # noqa: E402  (reuse, do not reimplement)
+from lint import (  # noqa: E402  (reuse, do not reimplement)
+    parse_backlinks,
+    parse_frontmatter,
+)
 from paths import (  # noqa: E402
     INDEX_FILE,
     LOG_FILE,
@@ -212,36 +215,127 @@ def tool_compathy_index(target: Path, _params: dict) -> dict:
     }
 
 
+def _resolve_page_type(p: Path, fm: dict) -> str:
+    """Return the page's type — frontmatter wins, fallback by path."""
+    ptype = fm.get("type")
+    if isinstance(ptype, str):
+        return ptype
+    if p.name == INDEX_FILE:
+        return "index"
+    if p.name == LOG_FILE:
+        return "log"
+    sub = p.parent.name
+    return "patterns" if sub == "patterns" else sub.rstrip("s")
+
+
+def _neighbor_record(wiki: Path, slug: str) -> dict | None:
+    """Resolve a slug to ``{slug, title, page_type}`` for a neighbor list.
+
+    Returns None if the slug is not addressable or the page cannot be read
+    (broken backlink, IO error). Callers drop None silently — the linter
+    surfaces broken backlinks separately.
+    """
+    p = _page_path_for_slug(wiki, slug)
+    if p is None:
+        return None
+    try:
+        text = _read_text(p)
+    except OSError:
+        return None
+    fm, body = _safe_frontmatter(text)
+    return {
+        "slug": slug,
+        "title": _title_from(fm, body, slug),
+        "page_type": _resolve_page_type(p, fm),
+    }
+
+
+def _compute_neighbors(
+    wiki: Path, current_slug: str, current_body: str
+) -> dict:
+    """Compute 1-hop graph neighbors of ``current_slug``.
+
+    ``outbound`` — distinct slugs referenced via ``[[slug]]`` in this page's
+    body that resolve to an existing wiki page.
+
+    ``inbound`` — distinct pages whose body references ``[[current_slug]]``.
+    O(N pages) per call.
+
+    Index and log are excluded from both lists — they are catalogs, not
+    knowledge nodes. Self-references and broken backlinks are skipped
+    (the linter surfaces them separately). Output is sorted by slug for
+    determinism.
+    """
+    CATALOGS = {"index", "log"}
+
+    seen_out: set[str] = set()
+    outbound: list[dict] = []
+    for slug in parse_backlinks(current_body):
+        if slug == current_slug or slug in seen_out or slug in CATALOGS:
+            continue
+        seen_out.add(slug)
+        rec = _neighbor_record(wiki, slug)
+        if rec is not None:
+            outbound.append(rec)
+    outbound.sort(key=lambda r: r["slug"])
+
+    seen_in: set[str] = set()
+    inbound: list[dict] = []
+    for slug, p, _default_type in _iter_all_pages(wiki):
+        if (
+            slug in CATALOGS
+            or slug == current_slug
+            or slug in seen_in
+        ):
+            continue
+        try:
+            text = _read_text(p)
+        except OSError:
+            continue
+        _fm, body = _safe_frontmatter(text)
+        if current_slug not in parse_backlinks(body):
+            continue
+        seen_in.add(slug)
+        rec = _neighbor_record(wiki, slug)
+        if rec is not None:
+            inbound.append(rec)
+    inbound.sort(key=lambda r: r["slug"])
+
+    return {"outbound": outbound, "inbound": inbound}
+
+
 def tool_compathy_get_page(target: Path, params: dict) -> dict:
-    """Return the parsed contents of a single wiki page."""
+    """Return the parsed contents of a single wiki page.
+
+    When ``include_neighbors`` is true, the response also carries a
+    ``neighbors`` field with ``outbound`` and ``inbound`` lists of 1-hop
+    backlink targets, each shaped as ``{slug, title, page_type}``. Lets
+    the model chain-navigate the wiki graph without a second MCP call.
+    """
     slug = params.get("slug")
     if not isinstance(slug, str) or not slug.strip():
         raise ToolError("missing or invalid 'slug' (string required)")
     slug = slug.strip()
+    include_neighbors = params.get("include_neighbors", False)
+    if not isinstance(include_neighbors, bool):
+        raise ToolError("'include_neighbors' must be a boolean")
     wiki = _wiki_root(target)
     p = _page_path_for_slug(wiki, slug)
     if p is None:
         raise ToolError(f"no wiki page with slug '{slug}'")
     text = _read_text(p)
     fm, body = _safe_frontmatter(text)
-    page_type = fm.get("type")
-    if not isinstance(page_type, str):
-        # Infer from path
-        if p.name == INDEX_FILE:
-            page_type = "index"
-        elif p.name == LOG_FILE:
-            page_type = "log"
-        else:
-            sub = p.parent.name
-            page_type = "patterns" if sub == "patterns" else sub.rstrip("s")
-    return {
+    out = {
         "slug": slug,
-        "page_type": page_type,
+        "page_type": _resolve_page_type(p, fm),
         "path": _rel_or_abs(p, target),
         "frontmatter": fm,
         "body": body,
         "title": _title_from(fm, body, slug),
     }
+    if include_neighbors:
+        out["neighbors"] = _compute_neighbors(wiki, slug, body)
+    return out
 
 
 def _make_snippet(body: str, query_lc: str) -> str:
@@ -402,13 +496,28 @@ TOOLS = {
     },
     "compathy_get_page": {
         "fn": tool_compathy_get_page,
-        "description": "Return the frontmatter and body of a single wiki page by slug.",
+        "description": (
+            "Return the frontmatter and body of a single wiki page by slug. "
+            "Pass include_neighbors=true to also return outbound + inbound "
+            "1-hop [[backlink]] neighbors so the model can chain-navigate "
+            "without a second call."
+        ),
         "schema": {
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
                     "description": "Page slug, e.g. 'authentication' or 'index'.",
+                },
+                "include_neighbors": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, include a 'neighbors' field with "
+                        "outbound + inbound 1-hop backlinks. Each entry is "
+                        "{slug, title, page_type}. Excludes index/log. "
+                        "Default false."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["slug"],
