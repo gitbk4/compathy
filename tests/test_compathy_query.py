@@ -129,6 +129,114 @@ class TestCompathyGetPage(WikiFixture):
         self.assertEqual(lg["page_type"], "log")
 
 
+class TestCompathyGetPageNeighbors(WikiFixture):
+    """Coverage for include_neighbors on compathy_get_page.
+
+    The WikiFixture seeds alpha.md with body "... references [[beta]] ...",
+    so outbound from alpha is [beta]; nothing else in the fixture references
+    alpha in body content (the index references [[alpha]] but index/log are
+    catalogs and excluded by design).
+    """
+
+    def test_default_omits_neighbors_field(self):
+        out = cq.tool_compathy_get_page(self.root, {"slug": "alpha"})
+        self.assertNotIn("neighbors", out)
+
+    def test_explicit_false_omits_neighbors_field(self):
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "alpha", "include_neighbors": False}
+        )
+        self.assertNotIn("neighbors", out)
+
+    def test_outbound_resolves_to_existing_page(self):
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "alpha", "include_neighbors": True}
+        )
+        outbound = out["neighbors"]["outbound"]
+        self.assertEqual([n["slug"] for n in outbound], ["beta"])
+        beta = outbound[0]
+        self.assertEqual(beta["page_type"], "concept")
+        self.assertEqual(beta["title"], "Beta")
+
+    def test_inbound_discovers_referring_page(self):
+        """Add a summary that references [[alpha]]; it must appear in
+        alpha's inbound list."""
+        (self.wiki / "summaries" / "uses-alpha.md").write_text(
+            _page("summary", "uses-alpha", "Talks about [[alpha]] in depth.")
+        )
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "alpha", "include_neighbors": True}
+        )
+        inbound_slugs = [n["slug"] for n in out["neighbors"]["inbound"]]
+        self.assertIn("uses-alpha", inbound_slugs)
+
+    def test_catalogs_excluded_from_inbound(self):
+        """index.md references [[alpha]] but is a catalog, not a knowledge
+        node — it must not appear in inbound."""
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "alpha", "include_neighbors": True}
+        )
+        inbound_slugs = [n["slug"] for n in out["neighbors"]["inbound"]]
+        self.assertNotIn("index", inbound_slugs)
+        self.assertNotIn("log", inbound_slugs)
+
+    def test_self_references_excluded_from_outbound(self):
+        (self.wiki / "concepts" / "selfish.md").write_text(
+            _page("concept", "selfish", "I reference [[selfish]] myself.")
+        )
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "selfish", "include_neighbors": True}
+        )
+        self.assertEqual(out["neighbors"]["outbound"], [])
+
+    def test_broken_backlinks_excluded_from_outbound(self):
+        (self.wiki / "concepts" / "links-nowhere.md").write_text(
+            _page("concept", "links-nowhere", "Points at [[ghost-page]].")
+        )
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "links-nowhere", "include_neighbors": True}
+        )
+        self.assertEqual(out["neighbors"]["outbound"], [])
+
+    def test_duplicate_backlinks_deduped_in_outbound(self):
+        (self.wiki / "concepts" / "dupe.md").write_text(
+            _page("concept", "dupe", "Mentions [[beta]] and again [[beta]].")
+        )
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "dupe", "include_neighbors": True}
+        )
+        self.assertEqual(
+            [n["slug"] for n in out["neighbors"]["outbound"]], ["beta"]
+        )
+
+    def test_alias_backlink_resolves_to_slug(self):
+        (self.wiki / "concepts" / "aliased.md").write_text(
+            _page("concept", "aliased", "See [[beta|the second concept]].")
+        )
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "aliased", "include_neighbors": True}
+        )
+        self.assertEqual(
+            [n["slug"] for n in out["neighbors"]["outbound"]], ["beta"]
+        )
+
+    def test_invalid_include_neighbors_type_raises(self):
+        with self.assertRaises(cq.ToolError):
+            cq.tool_compathy_get_page(
+                self.root, {"slug": "alpha", "include_neighbors": "yes"}
+            )
+
+    def test_outbound_sorted_by_slug(self):
+        (self.wiki / "concepts" / "multi.md").write_text(
+            _page("concept", "multi", "Refs [[claude]], [[beta]], [[alpha]].")
+        )
+        out = cq.tool_compathy_get_page(
+            self.root, {"slug": "multi", "include_neighbors": True}
+        )
+        slugs = [n["slug"] for n in out["neighbors"]["outbound"]]
+        self.assertEqual(slugs, sorted(slugs))
+
+
 class TestCompathySearch(WikiFixture):
     def test_finds_term_in_body(self):
         out = cq.tool_compathy_search(self.root, {"query": "persona"})
