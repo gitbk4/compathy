@@ -30,10 +30,11 @@ Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/4
 | **compathy** | `/compathy` | Build/update the compiled wiki for the current project |
 | **compathy-compare** | `/compathy-compare <path>` | Compare two projects' architectures + compatibility |
 | **compathy-augment** | `/compathy-augment <path>` | Learn from another project's strengths and adopt them |
+| **compathy-persona** | `/compathy-persona <export\|search\|import\|sync\|status\|update\|unlink\|whoami>` | Federate wikis across a company: org layer, team layers, and personas that let a member join instantly |
 
 ## Install
 
-Clone once, then use the installer. By default it installs **all three
+Clone once, then use the installer. By default it installs **all four
 skills**. Pick `--claude` or `--antigravity` for your IDE.
 
 ```bash
@@ -176,6 +177,60 @@ category:
 
 The estimate is an order-of-magnitude guide, not a project plan. It helps
 answer "is this a weekend project or a quarter?" before diving in.
+
+## compathy-persona (federation: org, teams, members)
+
+A company keeps one high-order compathy (the **org layer**). Each team
+keeps its own compathy that **extends** the org's. Any member **joins
+instantly** by importing the team's exported **persona**: their agent then
+reads org, team, and project wikis in that order, follows the team's
+patterns, and gets the team's toolkit.
+
+Parents are never copied. They are pinned to a commit, verified by the git
+tree hash of their `wiki/`, and cached read-only under `~/.compathy/layers/`
+(the `.ref` idea applied across repos).
+
+```
+# team lead, inside the team's compathy
+/compathy-persona export backend-engineer      # -> context/personas/backend-engineer.json (commit it)
+
+# new member, in an empty dir or an existing project
+/compathy-persona search "payments backend"    # ranks personas via the org registry
+/compathy-persona import acme/payments/backend-engineer
+#   plan -> three consents (fetch, link, toolkit) -> verified fetch -> link -> briefing
+
+# a teammate who cloned an already-linked repo
+/compathy-persona sync                          # lineage.json is enough to rehydrate
+```
+
+What linking writes: `context/lineage.json` (parents + pins + this layer's
+role), `context/persona.json` (the manifest, verbatim), a
+`entities/persona-<role>.md` page, and a "Federation" block in the
+CLAUDE.md/README context section. The `compathy-wiki` MCP server reads
+`lineage.json` itself, so every tool answers across layers
+(`compathy_get_page` returns `layer` and `also_in`).
+
+**Shadowing is opt-in.** A parent page that declares `authority: org` (or
+`team`) carries an `override` policy: `forbidden` (link only), `narrow`
+(a child may specialize it with `extends: <parent>`), or `free`. Every
+other same-slug collision, such as each layer's own `technical-patterns`,
+is layer-local and lint says nothing. Lint also rejects pages that claim an
+authority their layer does not have.
+
+**Permission control is git.** Branch protection and CODEOWNERS decide who
+writes the org layer; `lint.py` in CI decides whether a team respects it;
+pins and tree hashes decide what an importer trusts; the org's
+`context/registry.json` is the only path to discover teams. compathy has
+no accounts, tokens, or servers. Trust is shown as a 1-5 badge (4 = via the
+registry, pinned and verified; 5 reserved for signed personas in v1.1).
+
+Org maintainers: `persona.py registry init --org acme` and
+`registry add-team --id payments --source git+https://...`. Members:
+`persona.py config set-org git+https://github.com/acme/compathy-org.git`
+once, then search by name. Full flow in `skills/compathy-persona/SKILL.md`;
+design and threat model in `ARCHITECTURE.md`.
+
+To clear the read-only cache: `chmod -R u+w ~/.compathy/layers && rm -rf ~/.compathy/layers`.
 
 ## compathy-augment
 

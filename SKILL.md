@@ -58,6 +58,27 @@ and 2b. Never fails: the script always exits 0.
   `graphify: skipped — graphify not installed`
   Continue normally.
 
+### Phase 0d — Lineage (federated wikis)
+
+```bash
+python3 {skill_dir}/scripts/persona.py whoami --target .
+```
+
+- `linked: false`: standalone wiki, nothing changes. Continue.
+- `linked: true`: this project extends parent layers (team, org). Print one
+  line: `lineage: <org>@<pin> -> <team>@<pin> -> this project (persona <id>)`.
+  - If `needs_sync` is true (a teammate linked the repo; the caches are
+    missing on this machine), tell the user which layers will be fetched
+    and run `python3 {skill_dir}/scripts/persona.py sync --target .`.
+    Fetching is reading what the team already pinned, no consent question
+    needed; if it fails, continue and expect `layer-not-cached` warnings.
+  - Hold the persona's `reads_first` and `policy` in memory: you write only
+    this project's `context/`, never anything under `~/.compathy/layers/`.
+- `lineage_error` set: surface it verbatim (lint will also flag it) and
+  continue as standalone.
+
+Full federation workflow (export/import/search) lives in `/compathy-persona`.
+
 ---
 
 ## Phase 1 — INIT Mode (first run)
@@ -124,6 +145,20 @@ Write pages using the `Write` tool. For each source:
    systems (aim for 2-5 in quick, 5-15 in deep).
 
 **Do NOT write patterns pages yet.** Patterns are written LAST (see 1f-bis).
+
+**If linked (Phase 0d), resolve before you create.** For every concept or
+entity slug you are about to write:
+
+```bash
+python3 {skill_dir}/scripts/persona.py resolve <slug> --target .
+```
+
+Follow `advice`: if a parent layer already has the page, link to it
+(`[[slug]]` resolves upward) instead of duplicating it. If the parent page
+declares `authority:` with `override: narrow`, you may write a local page
+that specializes it only with `extends: <parent layer id>` in its
+frontmatter; `override: forbidden` means link only. Pages without
+`authority` are layer-local: each layer keeps its own.
 
 **If the Phase 0c bridge output has `god_nodes`**: write entity pages for those
 symbols first, in the order listed. They are the most structurally connected
@@ -195,6 +230,12 @@ components, models, tests, etc.). Synthesize technical patterns into
 
 Cite specific files in `sources:` (e.g. `sources: [src/auth/login.ts, src/routes/api.ts]`).
 Also set `related_paths:` so staleness lint tracks these over time.
+
+If linked, read the parent layers' patterns pages first (`compathy_get_page`
+with `layer:` set, or the paths in `reads_first`). Write only what is
+*specific to this project*; state org/team conventions as backlinks, not
+copies. Each layer keeps its own `technical-patterns`; that collision is
+layer-local by design.
 
 #### Mode B — No code yet: ask the user
 
@@ -283,6 +324,8 @@ For each changed raw source:
 - **Deleted**: remove the summary page. Scan concept/entity pages that cited
   this source (check `sources:` frontmatter) and update them.
 
+If linked, apply the same resolve-before-create rule as 1f for any new slug.
+
 Touch 10-15 pages per change is normal. You are doing bookkeeping.
 
 If the Phase 0c bridge output has `file_edges`, use them to verify that each
@@ -362,6 +405,18 @@ For each page that needs updating:
 - delta: <one sentence on what changed>
 ```
 
+### 3c-bis. Lineage freshness (linked projects only)
+
+```bash
+python3 {skill_dir}/scripts/persona.py status --target .
+```
+
+Report layers whose cache is missing or failed verification. Pins are
+never bumped here; if the user wants newer parents, point them at
+`/compathy-persona update` (shows an `index.md` diff before re-pinning).
+Passing `--check-upstream` does a network `ls-remote`; only use it when the
+user asks whether the org has moved on.
+
 ### 3d. Report
 
 After reflect, print a one-line summary:
@@ -392,6 +447,9 @@ reflect: no tracked paths — add related_paths to wiki pages to enable drift de
    write 40 pages.
 9. **Patterns are written LAST.** They synthesize the rest of the wiki plus
    the actual code. Don't write them before concepts/entities/summaries.
+10. **Parents are read-only; link, don't duplicate.** In a linked project,
+    never edit `~/.compathy/layers/`. Resolve a slug before creating it;
+    specialize an authoritative parent page only via `extends:`.
 
 ## When You're Done
 
@@ -405,6 +463,7 @@ compathy v<version>
   lint:      <E> errors, <W> warnings
   graphify:  <"used (N god nodes)" | "skipped — <reason>">
   reflect:   <M> pages refreshed
+  lineage:   <"standalone" | "<org>@<pin> -> <team>@<pin> -> this (persona <id>)">
   next:      run `/compathy` again whenever you add to raw/
 ```
 

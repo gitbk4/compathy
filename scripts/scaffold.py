@@ -5,6 +5,9 @@ Creates: context/{raw/, wiki/{concepts,entities,summaries}/, schema.md,
 wiki/index.md, wiki/log.md, wiki/README.md, raw/README.md}.
 
 Refuses to clobber an existing context/ directory.
+
+``--from-persona <file|url|org/team/role>`` scaffolds (when needed) and links
+the project to a team persona in one step; see persona.py.
 """
 from __future__ import annotations
 
@@ -196,12 +199,37 @@ def main() -> int:
         action="store_true",
         help="just detect mode (INIT|RECOMPILE) and exit",
     )
+    ap.add_argument(
+        "--from-persona",
+        default=None,
+        metavar="FILE|URL|ID",
+        help="scaffold (if needed) and link this project to a team persona "
+             "(delegates to persona.py import --apply)",
+    )
+    ap.add_argument(
+        "--consent",
+        default="fetch,link",
+        help="with --from-persona: comma list of fetch,link,toolkit (default fetch,link)",
+    )
+    ap.add_argument("--org", default=None, help="with --from-persona: org compathy source for id lookups")
     args = ap.parse_args()
     target = Path(args.target).resolve()
 
     if args.check:
         print(detect_mode(target))
         return 0
+
+    if args.from_persona:
+        # Import's link step scaffolds context/ when it is missing, so this
+        # works for an empty dir and for an existing wiki alike.
+        import persona  # pylint: disable=import-outside-toplevel
+        argv = ["import", args.from_persona, "--target", str(target), "--apply",
+                "--consent", args.consent]
+        if args.project_name:
+            argv += ["--project-name", args.project_name]
+        if args.org:
+            argv += ["--org", args.org]
+        return persona.main(argv)
 
     try:
         create_structure(target, args.project_name)

@@ -5,29 +5,50 @@ Speaks JSON-RPC 2.0 over stdio. Implements only the minimum MCP surface needed
 to expose the wiki as queryable tools:
 
   * initialize       (server info + capabilities)
-  * tools/list       (enumerate the five query tools)
+  * tools/list       (enumerate the query tools)
   * tools/call       (dispatch to the Python implementation)
 
 Out of scope (deliberate): resources, prompts, notifications, sampling,
 roots, subscriptions. Keep this module stdlib-only and side-effect-free.
 
+Federation
+----------
+
+When the project has ``context/lineage.json`` (it was linked to a team /
+org layer via ``/compathy-persona import``), every read tool walks the
+lineage: the project's own wiki first, then each parent layer's read-only
+cache under ``~/.compathy/layers/``. Results carry ``layer`` so provenance
+is never lost. The server reads ``lineage.json`` itself; ``.mcp.json`` does
+not need per-layer arguments (and so stays portable across machines).
+``--layer <dir>`` adds ad-hoc layers for debugging and tests.
+
 Tools exposed:
 
   compathy_index()
-      Return the wiki index.md content. Errors if the wiki has no index.md.
+      Return the wiki index.md content. When linked, also each parent
+      layer's index under ``layers``.
 
-  compathy_get_page(slug)
-      Return the parsed frontmatter and body of a single wiki page.
+  compathy_get_page(slug, include_neighbors=False, layer=None)
+      Return the parsed frontmatter and body of a single wiki page,
+      nearest layer first. ``also_in`` lists the same slug in other layers.
 
-  compathy_search(query, max_results=10)
-      Grep-style case-insensitive search across the wiki. Returns the first
-      ``max_results`` matches with a ranked snippet around the first hit.
+  compathy_search(query, max_results=10, layer=None)
+      Grep-style case-insensitive search across all layers.
 
-  compathy_list_pages(page_type=None)
-      List all wiki pages (optionally filtered by ``type`` frontmatter).
+  compathy_list_pages(page_type=None, layer=None)
+      List wiki pages (optionally filtered by ``type`` frontmatter / layer).
 
   compathy_log_recent(n=10)
-      Return the last n entries from log.md (entries delimited by H2 headings).
+      Return the last n entries from this project's log.md.
+
+  compathy_layers()
+      Lineage, pins and cache status. Empty lineage = standalone project.
+
+  compathy_personas_search(query, max_results=10)
+      Rank locally known team personas (this project's exports, cached
+      parent layers' exports, and ~/.compathy/personas). Local only: the
+      network path lives in the persona CLI so page content can never make
+      an agent fetch arbitrary URLs.
 
 The script also supports a non-MCP CLI smoke mode for manual testing:
 
@@ -75,6 +96,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # pylint: disable=wrong-import-position
+from lineage import (  # noqa: E402
+    LineageError,
+    describe_layers,
+    merged_index,
+    occurrences,
+    page_path,
+    read_json,
+    resolve_layers,
+    score_persona,
+    validate_manifest,
+)
 from lint import (  # noqa: E402  (reuse, do not reimplement)
     parse_backlinks,
     parse_frontmatter,
@@ -82,14 +114,17 @@ from lint import (  # noqa: E402  (reuse, do not reimplement)
 from paths import (  # noqa: E402
     INDEX_FILE,
     LOG_FILE,
+    PERSONAS_INDEX_FILE,
+    PERSONAS_SUBDIR,
     WIKI_SUBDIRS,
     index_path,
     log_path,
+    personas_home_dir,
     wiki_dir,
 )
 
 SERVER_NAME = "compathy-wiki"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2024-11-05"
 
 # JSON-RPC error codes (subset of the MCP / JSON-RPC 2.0 spec).
@@ -102,6 +137,10 @@ ERR_INTERNAL = -32603
 VALID_PAGE_TYPES = ("entity", "concept", "summary", "patterns", "index", "log")
 SNIPPET_RADIUS = 80
 LOG_ENTRY_RE = re.compile(r"^## ", re.MULTILINE)
+
+# Ad-hoc layers from ``--layer`` (module-level so tool functions keep the
+# (target, params) signature the dispatcher expects).
+EXTRA_LAYERS: list = []
 
 
 # ---------- helpers: error shaping ----------
@@ -126,22 +165,35 @@ def _wiki_root(target: Path) -> Path:
     return root
 
 
-def _page_path_for_slug(wiki: Path, slug: str) -> Path | None:
-    """Return the on-disk path for ``slug``, or None if not found.
+def _layers(target: Path) -> list:
+    """Self layer first, then cached parents (from lineage.json), then --layer extras."""
+    try:
+        return resolve_layers(target, extra=EXTRA_LAYERS)
+    except LineageError as e:
+        raise ToolError(f"context/lineage.json is invalid: {e}") from e
 
-    Searches the canonical subdirectories plus index.md / log.md at the root.
-    """
-    if slug == "index":
-        p = wiki / INDEX_FILE
-        return p if p.is_file() else None
-    if slug == "log":
-        p = wiki / LOG_FILE
-        return p if p.is_file() else None
-    for sub in WIKI_SUBDIRS:
-        p = wiki / sub / f"{slug}.md"
-        if p.is_file():
-            return p
-    return None
+
+def _readable_layers(target: Path) -> list:
+    return [l for l in _layers(target) if l.get("cached") and l.get("wiki") is not None]
+
+
+def _pick_layer(layers: list, layer_id) -> list:
+    if layer_id is None:
+        return layers
+    if not isinstance(layer_id, str) or not layer_id.strip():
+        raise ToolError("'layer' must be a non-empty string when given")
+    chosen = [l for l in layers if l.get("id") == layer_id.strip()]
+    if not chosen:
+        raise ToolError(
+            f"unknown or uncached layer '{layer_id}'; known: "
+            f"{[l.get('id') for l in layers]}"
+        )
+    return chosen
+
+
+def _page_path_for_slug(wiki: Path, slug: str) -> Path | None:
+    """Return the on-disk path for ``slug`` in one wiki (see lineage.page_path)."""
+    return page_path(wiki, slug)
 
 
 def _iter_all_pages(wiki: Path):
@@ -198,14 +250,14 @@ def _rel_or_abs(p: Path, target: Path) -> str:
 
 
 def tool_compathy_index(target: Path, _params: dict) -> dict:
-    """Return the wiki's index.md content."""
+    """Return the wiki's index.md content (plus parent indexes when linked)."""
     _wiki_root(target)  # validate wiki exists
     idx = index_path(target)
     if not idx.is_file():
         raise ToolError(f"index.md not found at {_rel_or_abs(idx, target)}")
     text = _read_text(idx)
     fm, body = _safe_frontmatter(text)
-    return {
+    out = {
         "slug": "index",
         "page_type": "index",
         "path": _rel_or_abs(idx, target),
@@ -213,6 +265,20 @@ def tool_compathy_index(target: Path, _params: dict) -> dict:
         "body": body,
         "raw": text,
     }
+    layers = _layers(target)
+    if len(layers) > 1:
+        out["layers"] = [
+            {
+                "layer": m["layer_id"],
+                "role": m["role"],
+                "self": m["self"],
+                "cached": m["cached"],
+                "path": m["path"],
+                "body": (_safe_frontmatter(m["text"])[1] if m["text"] is not None else None),
+            }
+            for m in merged_index(layers)
+        ]
+    return out
 
 
 def _resolve_page_type(p: Path, fm: dict) -> str:
@@ -253,7 +319,7 @@ def _neighbor_record(wiki: Path, slug: str) -> dict | None:
 def _compute_neighbors(
     wiki: Path, current_slug: str, current_body: str
 ) -> dict:
-    """Compute 1-hop graph neighbors of ``current_slug``.
+    """Compute 1-hop graph neighbors of ``current_slug`` within one layer.
 
     ``outbound`` — distinct slugs referenced via ``[[slug]]`` in this page's
     body that resolve to an existing wiki page.
@@ -305,12 +371,14 @@ def _compute_neighbors(
 
 
 def tool_compathy_get_page(target: Path, params: dict) -> dict:
-    """Return the parsed contents of a single wiki page.
+    """Return the parsed contents of a single wiki page, nearest layer first.
 
     When ``include_neighbors`` is true, the response also carries a
     ``neighbors`` field with ``outbound`` and ``inbound`` lists of 1-hop
-    backlink targets, each shaped as ``{slug, title, page_type}``. Lets
-    the model chain-navigate the wiki graph without a second MCP call.
+    backlink targets (within the layer the page was found in). ``layer``
+    pins the lookup to one layer id. ``also_in`` lists other layers that
+    have the same slug (shadowed parents, or a child override when a parent
+    layer was requested explicitly).
     """
     slug = params.get("slug")
     if not isinstance(slug, str) or not slug.strip():
@@ -319,10 +387,20 @@ def tool_compathy_get_page(target: Path, params: dict) -> dict:
     include_neighbors = params.get("include_neighbors", False)
     if not isinstance(include_neighbors, bool):
         raise ToolError("'include_neighbors' must be a boolean")
-    wiki = _wiki_root(target)
-    p = _page_path_for_slug(wiki, slug)
-    if p is None:
+    _wiki_root(target)
+    layers = _readable_layers(target)
+    found = occurrences(slug, layers)
+    if not found:
         raise ToolError(f"no wiki page with slug '{slug}'")
+    layer_id = params.get("layer")
+    if layer_id is not None:
+        chosen = _pick_layer(layers, layer_id)
+        hits = [(l, p) for l, p in found if l is chosen[0]]
+        if not hits:
+            raise ToolError(f"layer '{layer_id}' has no page with slug '{slug}'")
+        layer, p = hits[0]
+    else:
+        layer, p = found[0]
     text = _read_text(p)
     fm, body = _safe_frontmatter(text)
     out = {
@@ -332,9 +410,16 @@ def tool_compathy_get_page(target: Path, params: dict) -> dict:
         "frontmatter": fm,
         "body": body,
         "title": _title_from(fm, body, slug),
+        "layer": layer.get("id"),
+        "layer_role": layer.get("role"),
+        "also_in": [
+            {"layer": l.get("id"), "role": l.get("role"), "path": _rel_or_abs(pp, target)}
+            for l, pp in found
+            if l is not layer
+        ],
     }
     if include_neighbors:
-        out["neighbors"] = _compute_neighbors(wiki, slug, body)
+        out["neighbors"] = _compute_neighbors(layer["wiki"], slug, body)
     return out
 
 
@@ -356,7 +441,7 @@ def _make_snippet(body: str, query_lc: str) -> str:
 
 
 def tool_compathy_search(target: Path, params: dict) -> dict:
-    """Grep-style case-insensitive search across all wiki pages."""
+    """Grep-style case-insensitive search across all layers' wiki pages."""
     query = params.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ToolError("missing or invalid 'query' (non-empty string required)")
@@ -365,41 +450,48 @@ def tool_compathy_search(target: Path, params: dict) -> dict:
         raise ToolError("'max_results' must be an integer")
     if max_results < 1:
         raise ToolError("'max_results' must be >= 1")
-    wiki = _wiki_root(target)
+    _wiki_root(target)
+    layers = _pick_layer(_readable_layers(target), params.get("layer"))
     query_lc = query.strip().lower()
     matches = []
-    for slug, p, default_type in _iter_all_pages(wiki):
-        try:
-            text = _read_text(p)
-        except OSError:
-            continue
-        fm, body = _safe_frontmatter(text)
-        haystack = body.lower()
-        slug_hit = query_lc in slug.lower()
-        body_hit = query_lc in haystack
-        title = _title_from(fm, body, slug)
-        title_hit = query_lc in title.lower()
-        if not (slug_hit or body_hit or title_hit):
-            continue
-        # Rank: slug match > title match > body match; tie-break by hit count.
-        score = 0
-        if slug_hit:
-            score += 100
-        if title_hit:
-            score += 50
-        score += haystack.count(query_lc)
-        page_type = fm.get("type") if isinstance(fm.get("type"), str) else default_type
-        matches.append(
-            {
-                "slug": slug,
-                "page_type": page_type,
-                "title": title,
-                "snippet": _make_snippet(body, query_lc),
-                "score": score,
-                "path": _rel_or_abs(p, target),
-            }
-        )
-    matches.sort(key=lambda m: (-m["score"], m["slug"]))
+    for depth, layer in enumerate(layers):
+        for slug, p, default_type in _iter_all_pages(layer["wiki"]):
+            try:
+                text = _read_text(p)
+            except OSError:
+                continue
+            fm, body = _safe_frontmatter(text)
+            haystack = body.lower()
+            slug_hit = query_lc in slug.lower()
+            body_hit = query_lc in haystack
+            title = _title_from(fm, body, slug)
+            title_hit = query_lc in title.lower()
+            if not (slug_hit or body_hit or title_hit):
+                continue
+            # Rank: slug match > title match > body match; tie-break by hit count.
+            score = 0
+            if slug_hit:
+                score += 100
+            if title_hit:
+                score += 50
+            score += haystack.count(query_lc)
+            page_type = fm.get("type") if isinstance(fm.get("type"), str) else default_type
+            matches.append(
+                {
+                    "slug": slug,
+                    "page_type": page_type,
+                    "title": title,
+                    "snippet": _make_snippet(body, query_lc),
+                    "score": score,
+                    "path": _rel_or_abs(p, target),
+                    "layer": layer.get("id"),
+                    "_depth": depth,
+                }
+            )
+    # Same score: nearer layer first, then slug.
+    matches.sort(key=lambda m: (-m["score"], m["_depth"], m["slug"]))
+    for m in matches:
+        del m["_depth"]
     return {
         "query": query,
         "count": len(matches[:max_results]),
@@ -409,33 +501,39 @@ def tool_compathy_search(target: Path, params: dict) -> dict:
 
 
 def tool_compathy_list_pages(target: Path, params: dict) -> dict:
-    """Enumerate wiki pages, optionally filtered by ``page_type``."""
+    """Enumerate wiki pages across layers, optionally filtered by ``page_type``."""
     page_type = params.get("page_type")
     if page_type is not None:
         if not isinstance(page_type, str) or page_type not in VALID_PAGE_TYPES:
             raise ToolError(
                 f"'page_type' must be one of {list(VALID_PAGE_TYPES)} (or omitted)"
             )
-    wiki = _wiki_root(target)
+    _wiki_root(target)
+    layers = _pick_layer(_readable_layers(target), params.get("layer"))
     out = []
-    for slug, p, default_type in _iter_all_pages(wiki):
-        try:
-            text = _read_text(p)
-        except OSError:
-            continue
-        fm, body = _safe_frontmatter(text)
-        ptype = fm.get("type") if isinstance(fm.get("type"), str) else default_type
-        if page_type is not None and ptype != page_type:
-            continue
-        out.append(
-            {
-                "slug": slug,
-                "page_type": ptype,
-                "title": _title_from(fm, body, slug),
-                "path": _rel_or_abs(p, target),
-            }
-        )
-    out.sort(key=lambda x: (x["page_type"], x["slug"]))
+    for depth, layer in enumerate(layers):
+        for slug, p, default_type in _iter_all_pages(layer["wiki"]):
+            try:
+                text = _read_text(p)
+            except OSError:
+                continue
+            fm, body = _safe_frontmatter(text)
+            ptype = fm.get("type") if isinstance(fm.get("type"), str) else default_type
+            if page_type is not None and ptype != page_type:
+                continue
+            out.append(
+                {
+                    "slug": slug,
+                    "page_type": ptype,
+                    "title": _title_from(fm, body, slug),
+                    "path": _rel_or_abs(p, target),
+                    "layer": layer.get("id"),
+                    "_depth": depth,
+                }
+            )
+    out.sort(key=lambda x: (x["_depth"], x["page_type"], x["slug"]))
+    for x in out:
+        del x["_depth"]
     return {
         "filter": page_type,
         "count": len(out),
@@ -450,7 +548,7 @@ def tool_compathy_log_recent(target: Path, params: dict) -> dict:
         raise ToolError("'n' must be an integer")
     if n < 1:
         raise ToolError("'n' must be >= 1")
-    wiki = _wiki_root(target)
+    _wiki_root(target)
     lg = log_path(target)
     if not lg.is_file():
         raise ToolError(f"log.md not found at {lg}")
@@ -482,12 +580,116 @@ def tool_compathy_log_recent(target: Path, params: dict) -> dict:
     }
 
 
+def tool_compathy_layers(target: Path, _params: dict) -> dict:
+    """Describe the lineage: self + parent layers, pins, cache status."""
+    layers = _layers(target)
+    parents = [l for l in layers if not l.get("self")]
+    warnings = [
+        f"layer {l.get('id')} is not cached at pin {str(l.get('pin'))[:12]}; "
+        f"run `/compathy-persona sync`"
+        for l in parents
+        if not l.get("cached")
+    ]
+    persona = None
+    try:
+        from lineage import load_lineage  # pylint: disable=import-outside-toplevel
+        doc = load_lineage(target)
+        persona = (doc or {}).get("persona")
+    except LineageError:
+        persona = None
+    return {
+        "linked": bool(parents),
+        "persona": persona,
+        "depth": len(layers),
+        "layers": describe_layers(layers),
+        "warnings": warnings,
+    }
+
+
+def _local_persona_entries(target: Path) -> list:
+    """Collect persona index entries from every local source (no network)."""
+    entries = []
+    seen = set()
+
+    def _add(entry: dict, where: str, path: Path):
+        pid = entry.get("id")
+        if not isinstance(pid, str) or pid in seen:
+            return
+        seen.add(pid)
+        rec = {
+            "id": pid,
+            "title": entry.get("title"),
+            "summary": entry.get("summary"),
+            "tags": entry.get("tags") or [],
+            "team": pid.rsplit("/", 1)[0],
+            "updated": entry.get("updated") or (entry.get("provenance") or {}).get("exported_at"),
+            "where": where,
+            "path": str(path),
+        }
+        entries.append(rec)
+
+    def _scan_dir(pdir: Path, where: str):
+        if not pdir.is_dir():
+            return
+        for f in sorted(pdir.glob("*.json")):
+            if f.name == PERSONAS_INDEX_FILE:
+                continue
+            try:
+                data = read_json(f)
+            except LineageError:
+                continue
+            if validate_manifest(data):
+                continue
+            _add(data, where, f)
+
+    for layer in _layers(target):
+        ctx = layer.get("context")
+        if ctx is None or not layer.get("cached"):
+            continue
+        where = "this project" if layer.get("self") else f"layer {layer.get('id')}"
+        _scan_dir(Path(ctx) / PERSONAS_SUBDIR, where)
+    _scan_dir(personas_home_dir(), "~/.compathy/personas")
+    return entries
+
+
+def tool_compathy_personas_search(target: Path, params: dict) -> dict:
+    """Rank locally known team personas against ``query`` (local only)."""
+    query = params.get("query", "")
+    if not isinstance(query, str):
+        raise ToolError("'query' must be a string")
+    max_results = params.get("max_results", 10)
+    if not isinstance(max_results, int) or isinstance(max_results, bool) or max_results < 1:
+        raise ToolError("'max_results' must be an integer >= 1")
+    entries = _local_persona_entries(target)
+    results = []
+    for e in entries:
+        score, why = score_persona(query, e)
+        if query.strip() and score <= 0:
+            continue
+        rec = dict(e)
+        rec["score"] = score
+        rec["why"] = why
+        results.append(rec)
+    results.sort(key=lambda r: (-r["score"], r["id"]))
+    return {
+        "query": query,
+        "count": len(results[:max_results]),
+        "total_matches": len(results),
+        "results": results[:max_results],
+        "note": "local sources only; use `/compathy-persona search` to query the org registry",
+    }
+
+
 # ---------- tool registry ----------
 
 TOOLS = {
     "compathy_index": {
         "fn": tool_compathy_index,
-        "description": "Return the wiki index.md content (frontmatter + body).",
+        "description": (
+            "Return the wiki index.md content (frontmatter + body). When the "
+            "project is linked to parent layers, 'layers' also carries each "
+            "parent's index body."
+        ),
         "schema": {
             "type": "object",
             "properties": {},
@@ -497,10 +699,12 @@ TOOLS = {
     "compathy_get_page": {
         "fn": tool_compathy_get_page,
         "description": (
-            "Return the frontmatter and body of a single wiki page by slug. "
-            "Pass include_neighbors=true to also return outbound + inbound "
-            "1-hop [[backlink]] neighbors so the model can chain-navigate "
-            "without a second call."
+            "Return the frontmatter and body of a single wiki page by slug, "
+            "resolved nearest layer first (project, then team, then org); "
+            "'layer' says where it came from and 'also_in' lists other layers "
+            "with the same slug. Pass include_neighbors=true to also return "
+            "outbound + inbound 1-hop [[backlink]] neighbors so the model can "
+            "chain-navigate without a second call."
         ),
         "schema": {
             "type": "object",
@@ -519,6 +723,13 @@ TOOLS = {
                     ),
                     "default": False,
                 },
+                "layer": {
+                    "type": "string",
+                    "description": (
+                        "Restrict the lookup to one layer id (e.g. 'acme'). "
+                        "Omit for nearest-layer resolution."
+                    ),
+                },
             },
             "required": ["slug"],
             "additionalProperties": False,
@@ -527,8 +738,8 @@ TOOLS = {
     "compathy_search": {
         "fn": tool_compathy_search,
         "description": (
-            "Grep-style search across the wiki. Returns ranked matches "
-            "with snippets."
+            "Grep-style search across the wiki and its parent layers. Returns "
+            "ranked matches with snippets and the layer each came from."
         ),
         "schema": {
             "type": "object",
@@ -543,6 +754,10 @@ TOOLS = {
                     "minimum": 1,
                     "default": 10,
                 },
+                "layer": {
+                    "type": "string",
+                    "description": "Restrict to one layer id. Omit for all layers.",
+                },
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -551,8 +766,8 @@ TOOLS = {
     "compathy_list_pages": {
         "fn": tool_compathy_list_pages,
         "description": (
-            "Enumerate wiki pages, optionally filtered by type "
-            "(entity|concept|summary|patterns|index|log)."
+            "Enumerate wiki pages across layers, optionally filtered by type "
+            "(entity|concept|summary|patterns|index|log) and/or layer id."
         ),
         "schema": {
             "type": "object",
@@ -562,19 +777,61 @@ TOOLS = {
                     "enum": list(VALID_PAGE_TYPES),
                     "description": "Filter to a single page type. Omit for all.",
                 },
+                "layer": {
+                    "type": "string",
+                    "description": "Restrict to one layer id. Omit for all layers.",
+                },
             },
             "additionalProperties": False,
         },
     },
     "compathy_log_recent": {
         "fn": tool_compathy_log_recent,
-        "description": "Return the last n entries from log.md (most recent first).",
+        "description": "Return the last n entries from this project's log.md (most recent first).",
         "schema": {
             "type": "object",
             "properties": {
                 "n": {
                     "type": "integer",
                     "description": "Number of entries (default 10).",
+                    "minimum": 1,
+                    "default": 10,
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    "compathy_layers": {
+        "fn": tool_compathy_layers,
+        "description": (
+            "Describe this project's lineage: the persona it works as, each "
+            "parent layer (id, role, source, pin) and whether its read-only "
+            "cache is present. linked=false means a standalone wiki."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    "compathy_personas_search": {
+        "fn": tool_compathy_personas_search,
+        "description": (
+            "Rank locally known team personas (exports in this project, in "
+            "cached parent layers, and in ~/.compathy/personas) against a "
+            "query. Local only; never touches the network."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Free-text query, e.g. 'payments backend'. Empty lists all.",
+                    "default": "",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max results to return (default 10).",
                     "minimum": 1,
                     "default": 10,
                 },
@@ -762,12 +1019,15 @@ def main(argv=None) -> int:
         ),
     )
     ap.add_argument("--target", default=None, help="project root (default: cwd or $COMPATHY_TARGET)")
+    ap.add_argument("--layer", action="append", default=[],
+                    help="extra layer directory (a context/ or wiki/ dir); repeatable")
     ap.add_argument("--tool", default=None, choices=list(TOOLS.keys()),
                     help="run one tool and print its JSON output (CLI smoke mode)")
     ap.add_argument("--args", default="{}",
                     help="JSON object of arguments for --tool (default: {})")
     args = ap.parse_args(argv)
     target = _resolve_target(args.target)
+    EXTRA_LAYERS[:] = list(args.layer)
 
     if args.tool:
         return _cli_call(target, args.tool, args.args)

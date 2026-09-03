@@ -340,7 +340,7 @@ class TestJsonRpcInitialize(WikiFixture):
 
 
 class TestJsonRpcToolsList(WikiFixture):
-    def test_lists_five_tools_with_schemas(self):
+    def test_lists_all_tools_with_schemas(self):
         req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
         resp = cq.handle_request(req, self.root)
         tools = resp["result"]["tools"]
@@ -350,6 +350,7 @@ class TestJsonRpcToolsList(WikiFixture):
             sorted([
                 "compathy_index", "compathy_get_page", "compathy_search",
                 "compathy_list_pages", "compathy_log_recent",
+                "compathy_layers", "compathy_personas_search",
             ]),
         )
         for t in tools:

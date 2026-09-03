@@ -137,6 +137,39 @@ Ops: `init`, `ingest`, `compile`, `lint`, `heal`.
 - `schema.md` — co-evolved. Either party edits; bump `schema_version` on breaking
   changes so the linter flags pages needing recompilation.
 
+## Federation (optional)
+
+A wiki may extend **parent layers**: a team wiki extends the org wiki, a
+project wiki extends its team's. Parents are pinned to a commit and cached
+read-only under `~/.compathy/layers/`; they are never copied in.
+
+```
+context/
+├── lineage.json      (parents: id, role, source, path, pin, tree_sha; plus self)
+├── persona.json      (the imported team persona, verbatim)
+├── personas/         (personas THIS layer exports; index.json is generated)
+└── registry.json     (org layers only: the teams the org recognizes)
+```
+
+Resolution walks child to parent: `[[slug]]` resolves to this wiki first,
+then the team, then the org. Backlinks may point upward, never downward.
+
+Optional frontmatter, flat YAML, all backwards-compatible:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `authority` | `org` \| `team` \| `project` | This page is the owning layer's truth. Must equal the layer's own role. |
+| `override` | `forbidden` \| `narrow` \| `free` | What child layers may do with the same slug. Only meaningful with `authority`. Default `narrow`. |
+| `extends` | a parent layer id | Required on a child page that narrows an authoritative parent page. |
+
+Shadowing is **opt-in**: only parent pages that declare `authority:` carry
+a policy. Every other same-slug collision (for example each layer's own
+`technical-patterns`) is layer-local and produces no lint output.
+
+Permission control is git: branch protection and CODEOWNERS decide who
+writes a layer; lint decides whether a child respects `authority`; pins
+and tree hashes decide what an importer trusts. compathy has no accounts.
+
 ## Policies
 
 - **Single session**: don't run two compiles concurrently (state file can clobber).

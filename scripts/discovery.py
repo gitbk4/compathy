@@ -21,7 +21,24 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# pylint: disable=wrong-import-position
+from lineage import (  # noqa: E402
+    LineageError,
+    load_lineage,
+    parse_ref,
+    read_json,
+    validate_manifest,
+)
+from paths import (  # noqa: E402
+    WIKI_SUBDIR,
+    layer_slug,
+    persona_path,
+    state_home,
+)
 
 CLAUDE_MD = "CLAUDE.md"
 README_MD = "README.md"
@@ -42,43 +59,130 @@ COMPATHY_MCP_SERVER_KEY = "compathy-wiki"
 _MARKDOWN_SUFFIXES = {".md", ".markdown"}
 
 
-def render_context_section(project_name: str) -> str:
+def render_context_section(
+    project_name: str,
+    lineage: Optional[dict] = None,
+    persona: Optional[dict] = None,
+) -> str:
     """Return the full section body (including sentinel markers) to inject.
 
     The body lists key entry points (index.md, schema.md, wiki/{entities,
     concepts, patterns, summaries}, log.md) and includes a one-line note
     about the flat-YAML frontmatter convention.
 
-    ``project_name`` is currently unused inside the section body (the body
-    is project-agnostic so it can be safely upserted into any project), but
-    is kept in the signature for forward compatibility — e.g. if we later
-    want to mention the project by name in the heading.
+    When ``lineage`` (a parsed context/lineage.json) is given, a
+    "Federation" block follows: the persona the project works as, the
+    parent layers in reading order (org, then team, then this project),
+    where their read-only caches live, and the pages to read first.
+    Without lineage the output is byte-identical to pre-federation
+    compathy, so standalone projects are unaffected.
+
+    ``project_name`` is unused inside the standalone body (kept so the
+    section stays project-agnostic and safely upsertable anywhere).
     """
-    # NOTE: project_name is intentionally unused right now. Keeping the
-    # parameter so callers don't need to change when we start using it.
     _ = project_name
-    return "\n".join(
-        [
-            SENTINEL_START,
-            "## Project context",
-            "",
-            "This project has a compiled knowledge base (Karpathy-style wiki) at",
-            "`context/wiki/`. Key entry points:",
-            "",
-            "- `context/wiki/index.md`: page directory plus cross-references",
-            "- `context/schema.md`: schema version plus page-type contract",
-            "- `context/wiki/entities/`: projects, people, services, vendors",
-            "- `context/wiki/concepts/`: domain ideas and technical patterns",
-            "- `context/wiki/patterns/`: reusable patterns and conventions",
-            "- `context/wiki/summaries/`: compiled summaries of raw sources",
-            "- `context/wiki/log.md`: chronological audit trail",
-            "",
-            "Read `index.md` first to find the right page. Pages use flat-YAML",
-            "frontmatter plus markdown; compathy's `lint.py` validates the wire",
-            "format.",
-            SENTINEL_END,
-        ]
-    )
+    lines = [
+        SENTINEL_START,
+        "## Project context",
+        "",
+        "This project has a compiled knowledge base (Karpathy-style wiki) at",
+        "`context/wiki/`. Key entry points:",
+        "",
+        "- `context/wiki/index.md`: page directory plus cross-references",
+        "- `context/schema.md`: schema version plus page-type contract",
+        "- `context/wiki/entities/`: projects, people, services, vendors",
+        "- `context/wiki/concepts/`: domain ideas and technical patterns",
+        "- `context/wiki/patterns/`: reusable patterns and conventions",
+        "- `context/wiki/summaries/`: compiled summaries of raw sources",
+        "- `context/wiki/log.md`: chronological audit trail",
+        "",
+        "Read `index.md` first to find the right page. Pages use flat-YAML",
+        "frontmatter plus markdown; compathy's `lint.py` validates the wire",
+        "format.",
+    ]
+    if lineage:
+        lines.extend(_render_federation_block(lineage, persona))
+    lines.append(SENTINEL_END)
+    return "\n".join(lines)
+
+
+def _tilde(path: Path) -> str:
+    """Render a path under the user's home as ~/... (portable across machines)."""
+    try:
+        return "~/" + Path(path).relative_to(Path.home()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _render_federation_block(lineage: dict, persona: Optional[dict]) -> list:
+    """Lines for the federation part of the context section."""
+    layers = list(lineage.get("layers") or [])
+    persona_id = lineage.get("persona") or (persona or {}).get("id")
+    title = (persona or {}).get("title")
+    summary = (persona or {}).get("summary")
+    out = ["", "### Federation", ""]
+    if persona_id:
+        who = f"**{title}** (persona `{persona_id}`)" if title else f"persona `{persona_id}`"
+        out.append(f"You are working as {who}.")
+        if summary:
+            out.append(str(summary).strip())
+        out.append("")
+    out.append("This wiki extends parent layers. They are pinned, cached read-only, and")
+    out.append("never edited from here. Read in this order:")
+    out.append("")
+    n = 1
+    for layer in reversed(layers):  # org first, then team: general to specific
+        cache = state_home() / "layers" / layer_slug(layer["id"]) / str(layer["pin"])
+        idx = cache / (layer.get("path") or "context") / WIKI_SUBDIR / "index.md"
+        out.append(
+            f"{n}. `{layer['id']}` ({layer.get('role')}, pin `{str(layer['pin'])[:12]}`): "
+            f"`{_tilde(idx)}`"
+        )
+        n += 1
+    out.append(f"{n}. this project: `context/wiki/index.md`")
+    reads = (persona or {}).get("reads_first") or []
+    if reads:
+        out.append("")
+        out.append("Read first:")
+        for ref in reads:
+            lid, slug = parse_ref(ref)
+            where = f" (in `{lid}`)" if lid else ""
+            out.append(f"- `{slug}`{where}")
+    resp = (persona or {}).get("responsibilities") or []
+    if resp:
+        out.append("")
+        out.append("Responsibilities: " + "; ".join(str(r) for r in resp) + ".")
+    out.append("")
+    out.append("The `compathy-wiki` MCP server answers across all layers (`compathy_get_page`")
+    out.append("returns `layer`). Slugs resolve nearest layer first. Before writing a new")
+    out.append("page, check whether a parent already has it and link instead of duplicating.")
+    out.append("Propose parent changes upstream via PR; `/compathy-persona status` shows pin")
+    out.append("freshness and `/compathy-persona sync` restores missing caches.")
+    return out
+
+
+def load_federation(target: Path):
+    """Return (lineage, persona) for ``target``; (None, None) when standalone.
+
+    Soft-fails: a malformed lineage.json or persona.json yields None for that
+    part (lint reports the problem; breadcrumbs must never abort a scaffold).
+    """
+    target = Path(target)
+    lineage = None
+    persona = None
+    try:
+        lineage = load_lineage(target)
+    except LineageError:
+        lineage = None
+    ppath = persona_path(target)
+    if ppath.is_file():
+        try:
+            data = read_json(ppath)
+            if not validate_manifest(data):
+                persona = data
+        except LineageError:
+            persona = None
+    return lineage, persona
 
 
 def upsert_section(target_path: Path, section_body: str) -> str:
@@ -215,7 +319,8 @@ def write_discovery_breadcrumbs(target: Path, project_name: str) -> Dict[str, st
     for some reason, we won't damage it).
     """
     target = Path(target)
-    section_body = render_context_section(project_name)
+    lineage, persona = load_federation(target)
+    section_body = render_context_section(project_name, lineage, persona)
     result: Dict[str, str] = {
         "claude_md": "skipped",
         "readme_md": "skipped",

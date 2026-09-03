@@ -169,6 +169,11 @@ simple regex.
 | No git repo | bootstrap runs without git data; warning printed |
 | Git not installed | bootstrap exits with clear error |
 | `.ref` path traversal | rejected before read; error message names the file |
+| Layer pin or wiki tree sha mismatch | fetch aborts in a temp dir; nothing cached, nothing linked |
+| Parent layer not cached | lint warns (`layer-not-cached`), unresolved links become warnings; `sync` fixes |
+| Team page overrides `override: forbidden` org page | lint error `shadow-forbidden` |
+| Team page claims `authority: org` | lint error `authority-claim` |
+| Registry / persona JSON malformed | lint error; search skips with a warning |
 | `.ref` target missing | clear error with target path |
 | Corrupt state.json | warning + rebuild from scratch (no data loss) |
 | Mid-write crash | atomic rename prevents partial state files |
@@ -223,6 +228,134 @@ Until that threshold is observed in the wild, no new partition, no new
 search index, no new runtime dependency. The MCP server may add
 `wiki_page(slug)` → body + 1-hop backlink neighbors so the LLM gets graph
 context without re-querying; that's the only new surface area.
+
+## Federation: layers, personas, registries (v0.3.0)
+
+A company keeps a **high-order compathy** (the org layer). Teams keep
+their own **specialized sub-compathy** that extends it. A member **joins
+instantly** by importing the team's exported **persona**. Design decision
+#4 (`.ref` over copies) applied across repos: parents are *pointed at*,
+pinned, and cached; never vendored into the child's `wiki/`.
+
+```
+  ~/.compathy/layers/acme/<pin>/context/             org layer   (read-only cache)
+  ~/.compathy/layers/acme--payments/<pin>/context/   team layer  (read-only cache)
+  ./context/                                          project     (writable, today's wiki)
+      ├── lineage.json   parents + pins + self {id, role}
+      └── persona.json   the join token, verbatim
+```
+
+Any compathy can be a parent; org/team/project are labels on an ordered
+list (depth cap 3). A team layer *is* a compathy whose `lineage.json`
+points at the org; it declares `self: {id: acme/payments, role: team}`.
+
+### Resolution
+
+1. `[[slug]]` and `compathy_get_page` resolve **child to parent**; the
+   result carries `layer` and `also_in`.
+2. Backlinks may resolve **upward** only. A parent lints alone and knows
+   nothing about children.
+3. **Shadowing is opt-in per page.** Only a parent page that declares
+   `authority:` carries an `override` policy (`forbidden` / `narrow` /
+   `free`). A child may narrow a `narrow` page only with
+   `extends: <parent id>`. Same-slug pages without `authority` (every
+   layer's `technical-patterns`) are layer-local and lint says nothing.
+4. A page may only claim the `authority` of the layer it lives in
+   (`authority-claim` lint error otherwise).
+5. If a parent is not cached, unresolved backlinks downgrade to
+   `unverified-backlink` warnings so a fresh clone lints before `sync`.
+
+### The persona (join token)
+
+`context/personas/<role>.json`, exported by a team lead, committed, listed
+in the generated `personas/index.json`:
+
+- `layers[]`: id, role, git `source`, `path`, commit `pin`, and the git
+  **tree sha of `wiki/`** at that pin (covers every page, verifiable
+  offline, free via `git rev-parse <pin>:<path>/wiki`).
+- `reads_first` (`<layer-id>/<slug>`), `responsibilities`, `toolkit`
+  (ai-quickstart suggestion shape), `policy` (advisory locally, enforced
+  upstream by git), `provenance`, and a reserved `signature` slot.
+
+Two join paths, both idempotent:
+
+- **import** a persona (file, https URL, or `org/team/role` via the org
+  registry) into your own project;
+- **clone** an already-linked repo and run `sync`; `lineage.json` is
+  sufficient to rehydrate the caches. `.mcp.json` carries no per-layer
+  arguments because the MCP server reads `lineage.json` itself.
+
+### Fetch and verify
+
+```
+git clone --no-checkout --filter=blob:none <url>   (plain clone fallback)
+git sparse-checkout set --no-cone <path>
+git checkout <pin>
+verify HEAD == pin && rev-parse HEAD:<path>/wiki == tree_sha
+chmod -R a-w ; rename into ~/.compathy/layers/<id>/<pin>/
+```
+
+Clone happens in a sibling temp dir and is renamed in only after
+verification, so a failed fetch never leaves a partial or unverified
+cache entry. `GIT_TERMINAL_PROMPT=0`, no submodules, sources limited to
+`git+https`, `git+ssh`, `git+file` (tests).
+
+### Discovery
+
+Org repo `context/registry.json` lists teams; each team's
+`context/personas/index.json` lists personas. Search is a two-hop sparse
+fetch cached for six hours. A team the org does not list is not
+discoverable; that is the permission model applied to discovery.
+
+### Permission control for the high-order source of truth
+
+Principles:
+
+1. **Git is the write-permission system; compathy does no auth.** Branch
+   protection + CODEOWNERS on the org repo (or on `context/` in a
+   monorepo) decide who changes org truth. Stdlib-only, serverless,
+   reviewable in PRs.
+2. **compathy enforces structure; CI enforces that structure holds.**
+   `lint.py` in a child's CI fails the build when a team page violates
+   `override: forbidden` or claims an authority it does not have.
+3. **Read trust comes from pins and hashes.** Import verifies commit and
+   wiki tree sha; updating is an explicit, diffed action.
+4. **The org registry is the trust anchor**, not the file. A persona
+   handed out-of-band is re-resolved against the registry; a
+   byte-identical match lifts trust from 2 to 4. Signatures (v1.1) only
+   add value for files that never touch the registry.
+5. **Least privilege on join.** Three separate consents (fetch, link,
+   toolkit); caches are read-only; `policy.may_edit` tells the agent to
+   keep its hands off parents, which are not in the project's git tree
+   anyway.
+6. **Provenance survives layering.** Every resolved page carries `layer`;
+   every persona carries `provenance`; every import is logged to
+   `~/.compathy/import-log.jsonl` and to the wiki `log.md`.
+
+| Actor | Org layer | Team layer | Project | Personas | Registry |
+|---|---|---|---|---|---|
+| Org maintainer (CODEOWNERS) | edit, set `authority/override` | read | read | export org-level | edit |
+| Team lead (CODEOWNERS on team `context/`) | read; propose via PR | edit; narrow per `override` | read | export team personas | propose entry via PR |
+| Team member | read | read; propose via PR | edit | import | read |
+| CI | lint | lint + shadow/authority checks | lint | validate manifests | validate |
+
+Upward flow in v1 is pull-model and already built: a parent's owner runs
+`/compathy-augment <member-project>` to adopt strong patterns from below.
+Only parent owners can write the parent, so this is permission-correct by
+construction. A push-model `propose` helper is v2.
+
+Trust score (deterministic, render-time): 4 = via org registry (or
+byte-identical to it), pinned + tree-verified; 3 = direct URL; 2 = local
+file; 1 = any layer unverified. 5 reserved for signed personas.
+
+Threats considered: prompt injection via parent wiki text (pins mean you
+read what was reviewed; the MCP persona search is local-only so page text
+cannot make an agent fetch URLs); persona as supply chain (`toolkit` is
+shown and consented, never auto-run); registry poisoning (only the org
+registry is trusted; team indexes are generated and lint-validated); stale
+org truth (the most likely failure: `status`, `update`, and the
+`lineage:` summary line exist for it). Deliberately not built: accounts,
+tokens, servers, encryption, automatic upward writes, mandatory signatures.
 
 ## Why not tokenize-and-vector-index?
 
