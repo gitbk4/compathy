@@ -1,0 +1,16 @@
+---
+type: respond-ledger
+schema_version: 1
+created: {{date}}
+---
+
+# Stand-in ledger for {{project_name}}
+
+Append-only, written by `respond.py record`; grades and reactions are
+filled in place by `review`. Local and private: never posted, shared or
+compiled into the wiki. Questions are one-line paraphrases, not message
+text.
+
+Format: `## [<ISO time>] R-NNNN | <outcome> | <intent> | <confidence>`
+followed by `- key: value` lines (channel, thread, asker, question, pages,
+links, reply_ts, mode, escalated_via, house_answer, reaction, grade, note).

@@ -141,3 +141,42 @@ def layer_slug(layer_id: str) -> str:
         else:
             out.append("_")
     return "".join(out) or "layer"
+
+# ---------- respond (the Slack stand-in's companion) ----------
+
+RESPOND_SUBDIR = "respond"                 # context/respond/
+RESPOND_POLICY_FILE = "policy.md"
+RESPOND_SOURCES_FILE = "sources.md"
+RESPOND_LESSONS_FILE = "lessons.md"
+RESPOND_LEDGER_FILE = "ledger.md"
+RESPOND_STATE_FILE = ".respond-state.json"
+
+
+def respond_dir(target) -> Path:
+    """Return context/respond/ for the target project."""
+    return context_root(target) / RESPOND_SUBDIR
+
+
+def respond_policy_path(target) -> Path:
+    """Return context/respond/policy.md."""
+    return respond_dir(target) / RESPOND_POLICY_FILE
+
+
+def respond_sources_path(target) -> Path:
+    """Return context/respond/sources.md (the registry of shareable documents)."""
+    return respond_dir(target) / RESPOND_SOURCES_FILE
+
+
+def respond_lessons_path(target) -> Path:
+    """Return context/respond/lessons.md."""
+    return respond_dir(target) / RESPOND_LESSONS_FILE
+
+
+def respond_ledger_path(target) -> Path:
+    """Return context/respond/ledger.md (append-only)."""
+    return respond_dir(target) / RESPOND_LEDGER_FILE
+
+
+def respond_state_path(target) -> Path:
+    """Return context/respond/.respond-state.json."""
+    return respond_dir(target) / RESPOND_STATE_FILE

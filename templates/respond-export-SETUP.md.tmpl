@@ -1,0 +1,74 @@
+# {{owner_name}}'s out-of-office stand-in in ChatGPT
+
+A ChatGPT workspace agent runs the stand-in in the cloud on a schedule, so it keeps working with your laptop closed. Paste `agent-instructions.md` into the agent's Instructions, upload the four files in `files/`, add `compathy-respond.zip` as a skill, connect Slack, Google Calendar and Linear, test it in a private channel, then schedule it while you are out. Links in this kit stay shareable until {{links_valid_until}}; export again before then.
+
+## What is in this folder
+
+| File | Use |
+|---|---|
+| `SETUP.md` | These steps. |
+| `agent-instructions.md` | Paste into the agent's Instructions. It holds the whole procedure. |
+| `files/` | Upload its four files under Files: `wiki.md` (every page, in one file), `policy.md`, `lessons.md` and `sources.md`. |
+| `compathy-respond.zip` | Upload under Skills. It adds a scripted search and check for an agent with a code tool. |
+| `compathy-respond/` | The same skill unzipped, to read. |
+| `schedule-instructions.md` | Paste into the schedule's additional instructions, with your return filled in. |
+| `MANIFEST.json` | What was exported, from where, and when. |
+
+The skill holds {{pages}} pages from the {{project_name}} wiki, the policy, the lessons and the link registry. It holds no raw sources, no ledger, no Slack messages, and none of the pages the policy excludes (people pages and anything compiled from conversations, notes or email). The pages do carry customer names and internal plans, so upload the kit only to your company's ChatGPT workspace.
+
+## Before you start
+
+- **ChatGPT Business or Enterprise with workspace agents.** Agents appears in the sidebar. On Enterprise, an admin turns them on.
+- **The Slack app in ChatGPT, with its actions on.** The stand-in posts replies and creates reminders as you. An admin reviews these under Admin console, Plugins, Slack, Actions, and Slack may need to approve the app's scopes.
+- **One stand-in at a time.** Pause any other copy first, including the Claude one. Two running stand-ins means two replies to every coworker.
+- **A private log channel.** In Slack, create a private channel named {{log_channel}} with only you in it. The stand-in writes one line per handled message there.
+
+## Build the agent
+
+1. Open Agents, select Create, then Start blank and Skip to builder. Name it "{{owner_name}}'s OOO stand-in". Pick a reasoning model with high reasoning effort.
+2. Paste the whole of `agent-instructions.md` into Instructions.
+3. Under Files, select Add and upload the four files in `files/`.
+4. Under Skills, upload `compathy-respond.zip`. It runs the search and the check as code when the agent has a code tool. If the builder rejects the zip, skip this step: the instructions and the files carry the whole procedure, with the check done by hand.
+5. Under Tools, select Add tool and add these:
+   - **Slack** (app). Authentication: End-user account, so replies come from your account as before. Write actions: Custom, with "Never ask" for sending messages and for creating reminders. Leave every other Slack action on "Always ask" or off.
+   - **Google Calendar** (app). End-user account, read only.
+   - **Linear** (custom MCP). URL `https://mcp.linear.app/mcp/readonly`, OAuth. The read-only endpoint keeps the stand-in from changing tickets.
+   - A code or Python tool, if the builder offers one. The skill's check runs there. Without it the agent applies the same checks by hand, which is weaker.
+
+   Leave out web search, Google Drive and image generation.
+6. Open Slack's Safety section, select Add constraint, and describe two limits: "Only post messages that start with ':robot_face: *Automated reply', in a thread or direct message where a coworker mentioned or messaged {{owner_name}}, or in {{log_channel}}" and "Only create reminders for {{owner_name}}". Review each generated rule, then select Update.
+7. Under Channels, open ChatGPT and set access to Private to me. Skip Connect Slack: that puts the agent in a channel as its own bot with shared credentials, while the stand-in works through your own Slack connection.
+8. Select Create.
+
+## Test it in Preview
+
+1. In {{test_channel}}, post two questions the way a coworker would: one a house answer covers ("{{first_house_answer}}") and one the stand-in should escalate ("Can you review my deck?").
+2. In Preview, send: "Run one pass. Window ends tomorrow at 17:00. Look back: 60 minutes. Mode: live. Test channel only."
+3. Check Slack. The first question has a thread reply that starts with the header and carries the house answer's links. The second has an acknowledgement in its thread and a Slackbot reminder to you. {{log_channel}} has two `respond-log` lines.
+4. Send the same prompt again. Nothing new should post: the stand-in finds its own replies and skips those threads.
+
+If the agent says it cannot post to Slack or create reminders, ask your ChatGPT admin to turn on those Slack actions. If they stay off, this agent cannot reply, and a stand-in that runs where Slack posting works (the Claude one) remains the option.
+
+## Run it while you are out
+
+1. Open the agent's ChatGPT channel and select Add schedule.
+2. Run every 15 minutes. Slack caps how many requests your account makes, and a shorter interval spends that budget faster.
+3. Paste `schedule-instructions.md` into the additional instructions and set the window end to your return. For a first day, set `Mode: dry`: would-be replies go to {{log_channel}} only.
+4. Select Add schedule. The stand-in stops on its own once the window ends; remove the schedule when you are back.
+
+## When you are back
+
+1. In Claude Code, in the {{project_name}} project, run `/compathy-respond review`. It imports the `respond-log` lines from {{log_channel}} into the ledger, you grade them, and the lessons update.
+2. Export again and upload the new zip to the agent (Update):
+
+       {{export_command}}
+
+Export again also after `/compathy` recompiles the wiki, after you change who can open a linked document, and before {{links_valid_until}}, when the kit's link checks expire.
+
+## How it differs from the Claude stand-in
+
+- Escalations reach your phone as Slackbot reminders. A message from your own account never notifies you.
+- No reaction marks: the ChatGPT Slack app cannot add reactions. The stand-in's thread reply is the mark.
+- No local state. The stand-in reads each thread to see what it already handled, and the log channel holds the record until the review imports it.
+- Link checks are frozen at export. Drive and Notion sharing is checked when you export, and the kit treats a checked link as shareable for {{link_max_age_days}} days.
+- It runs in the cloud, so it works with your laptop closed.

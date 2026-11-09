@@ -176,6 +176,25 @@ the pages whose `visibility` reaches its audience into a private core repo
 that teammates link to as a parent. Inside a shared page,
 `<!-- private -->` ... `<!-- /private -->` marks text that stays here.
 
+## Respond (optional)
+
+`/compathy-respond` keeps its companion files in `context/respond/`:
+
+```
+context/respond/
+├── policy.md           human-owned; who, triggers, sources, links, never, tiers, limits
+├── sources.md          human-owned; the registry of shareable documents
+├── lessons.md          co-evolved; house answers, do-not-answer, clarify-first, phrasing, gaps
+├── ledger.md           append-only; one entry per interaction (local, never shared)
+├── handoff-<date>.md   written when a window stops
+└── .respond-state.json window, last-seen, handled keys, counters
+```
+
+Frontmatter types: `respond-policy`, `respond-registry`, `respond-lessons`,
+`respond-ledger`, `respond-handoff`. Flat YAML as everywhere else. The
+stand-in reads the wiki; it never writes `wiki/` or `raw/`. Lint checks the
+folder's structure when it exists (warnings only).
+
 ## Policies
 
 - **Single session**: don't run two compiles concurrently (state file can clobber).

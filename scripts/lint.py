@@ -33,6 +33,11 @@ from paths import (  # noqa: E402
     registry_path,
     schema_path,
     wiki_dir,
+    respond_dir,
+    respond_ledger_path,
+    respond_lessons_path,
+    respond_policy_path,
+    respond_sources_path,
 )
 from lineage import (  # noqa: E402
     LineageError,
@@ -658,6 +663,106 @@ def check_staleness(wiki_root: Path, target_root: Path) -> list:
     return issues
 
 
+# ---------- respond (context/respond/, warnings only) ----------
+
+RESPOND_LEDGER_HEADER_RE = re.compile(
+    r"^## \[[^\]]+\] R-\d+ \| [\w-]+ \| [^|\n]* \| [^|\n]*$"
+)
+RESPOND_REGISTRY_COLUMNS = ("title", "url", "kind", "audience", "status", "verified", "note")
+RESPOND_REGISTRY_STATUSES = ("shared", "private", "unknown")
+RESPOND_LESSON_SECTIONS = ("House answers", "Do not answer", "Clarify first", "Phrasing", "Gaps")
+
+
+def check_respond(target: Path) -> list:
+    """Structural checks for the /compathy-respond companion folder.
+
+    A wiki without ``context/respond/`` produces no output at all, so
+    standalone lint output stays byte-identical. Everything here is a
+    warning: the folder is human-owned and the stand-in refuses to run on
+    a file it cannot parse anyway.
+    """
+    rd = respond_dir(target)
+    if not rd.is_dir():
+        return []
+    issues = []
+
+    def warn(kind, path, hint):
+        issues.append({"kind": kind, "severity": "warning",
+                       "path": f"respond/{path}", "hint": hint})
+
+    def read_fm(path: Path, expected_type: str):
+        if not path.is_file():
+            warn("respond-missing", path.name, f"expected {path.name}")
+            return None, None
+        try:
+            fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            warn("respond-frontmatter", path.name, str(e))
+            return None, None
+        if fm.get("type") != expected_type:
+            warn("respond-type", path.name, f"type should be {expected_type}")
+        return fm, body
+
+    fm, _ = read_fm(respond_policy_path(target), "respond-policy")
+    if fm is not None:
+        for key in ("owner_name", "allow_types", "intents", "header", "footer"):
+            if not fm.get(key):
+                warn("respond-policy-field", "policy.md", f"{key} is empty")
+        for key in ("owner_slack_id", "internal_domain"):
+            if not fm.get(key):
+                warn("respond-policy-field", "policy.md",
+                     f"{key} is empty; the stand-in cannot tell the owner or internal askers apart")
+
+    _, body = read_fm(respond_sources_path(target), "respond-registry")
+    if body is not None:
+        header = None
+        for raw in body.splitlines():
+            line = raw.strip()
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip().replace("\u0000", "|")
+                     for c in line.replace("\\|", "\u0000").strip("|").split("|")]
+            if header is None:
+                header = [c.lower() for c in cells]
+                missing = [c for c in RESPOND_REGISTRY_COLUMNS if c not in header]
+                if missing:
+                    warn("respond-registry-columns", "sources.md", f"missing columns {missing}")
+                    break
+                continue
+            if all(c.strip(":-") == "" for c in cells):
+                continue
+            row = dict(zip(header, cells))
+            url = row.get("url", "")
+            if not url:
+                continue
+            if not url.startswith(("http://", "https://")):
+                warn("respond-registry-url", "sources.md", f"not a URL: {url}")
+            status = (row.get("status") or "unknown").lower()
+            if status not in RESPOND_REGISTRY_STATUSES:
+                warn("respond-registry-status", "sources.md",
+                     f"{url}: status {status!r} not in {list(RESPOND_REGISTRY_STATUSES)}")
+            if status == "shared" and not row.get("verified"):
+                warn("respond-registry-unverified", "sources.md",
+                     f"{url}: shared without a Verified date")
+        if header is None:
+            warn("respond-registry-table", "sources.md", "no table found")
+
+    _, body = read_fm(respond_lessons_path(target), "respond-lessons")
+    if body is not None:
+        present = {line[3:].strip() for line in body.splitlines() if line.startswith("## ")}
+        for sec in RESPOND_LESSON_SECTIONS:
+            if sec not in present:
+                warn("respond-lessons-section", "lessons.md", f"missing section '{sec}'")
+
+    _, body = read_fm(respond_ledger_path(target), "respond-ledger")
+    if body is not None:
+        for lineno, line in enumerate(body.splitlines(), start=1):
+            if line.startswith("## ") and not RESPOND_LEDGER_HEADER_RE.match(line):
+                warn("respond-ledger-entry", "ledger.md",
+                     f"line {lineno}: entry header does not match the format")
+    return issues
+
+
 # ---------- report ----------
 
 def lint(target: Path) -> dict:
@@ -697,6 +802,7 @@ def lint(target: Path) -> dict:
         all_issues.extend(check_shadowing(wiki_root, parents))
     all_issues.extend(check_persona_manifests(target))
     all_issues.extend(check_registry(target))
+    all_issues.extend(check_respond(target))
     all_issues.extend(check_staleness(wiki_root, target))
 
     errors = [i for i in all_issues if i.get("severity") == "error"]

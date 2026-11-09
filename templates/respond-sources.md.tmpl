@@ -1,0 +1,27 @@
+---
+type: respond-registry
+schema_version: 1
+created: {{date}}
+updated: {{date}}
+---
+
+# Shareable documents for {{project_name}}
+
+The stand-in links only rows whose Status is `shared`, whose Audience is
+in the policy's `link_audiences`, and whose Verified date is within the
+policy's `link_verify_max_age_days`. Seeded at init from the links the
+allowed wiki pages cite; `/compathy-respond verify` fills Status, Verified
+and Via from the connectors (Drive permissions, Notion's Private section,
+kind rules). Set Via to `manual` on a row you decide yourself; `verify`
+never overwrites a manual row.
+
+Kind: gdoc, gsheet, gslides, claude-artifact, claude-design, linear,
+notion, storybook, figma, sharepoint, public (a .gov or .edu site), other
+(an unknown host; never auto-shared). Audience: internal, all, or a team name.
+Status: shared, private, unknown. Verified: the date of the last check.
+Via: how it was decided (drive:domain, drive:anyone, drive:users,
+notion:private-section, notion:not-private, rule:<kind>, manual).
+
+| Title | URL | Kind | Audience | Status | Verified | Via | Note |
+|---|---|---|---|---|---|---|---|
+{{registry_rows}}

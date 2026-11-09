@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install compathy skills for Claude Code, Antigravity, or any agent that loads SKILL.md skills.
 
-Installs the main compathy skill plus optional subskills (compare, augment, persona, publish).
+Installs the main compathy skill plus optional subskills (compare, augment, persona, respond, publish).
 Default: install all skills. Use --skill to install a specific one.
 
 Prefers symlinks so `git pull` updates all installed skills. Falls back to
@@ -13,6 +13,7 @@ Usage:
   python3 scripts/install.py --dir PATH                     # any agent: its skills folder
   python3 scripts/install.py --claude --skill compare       # just compathy-compare
   python3 scripts/install.py --claude --skill persona       # just compathy-persona
+  python3 scripts/install.py --claude --skill respond       # just compathy-respond
   python3 scripts/install.py --claude --skill publish       # just compathy-publish
   python3 scripts/install.py --claude --workspace           # all skills, project-local
   python3 scripts/install.py --claude --uninstall           # remove all
@@ -34,6 +35,7 @@ SKILLS = {
     "compare": ("compathy-compare", "skills/compathy-compare"),
     "augment": ("compathy-augment", "skills/compathy-augment"),
     "persona": ("compathy-persona", "skills/compathy-persona"),
+    "respond": ("compathy-respond", "skills/compathy-respond"),
     "publish": ("compathy-publish", "skills/compathy-publish"),
 }
 
@@ -176,7 +178,7 @@ def main() -> int:
                             help="install into any agent's skills folder (agents that load SKILL.md skills)")
     ap.add_argument("--workspace", action="store_true",
                     help="install into current workspace instead of global")
-    ap.add_argument("--skill", choices=["main", "compare", "augment", "persona", "publish", "all"],
+    ap.add_argument("--skill", choices=["main", "compare", "augment", "persona", "respond", "publish", "all"],
                     default="all",
                     help="which skill to install (default: all)")
     ap.add_argument("--uninstall", action="store_true",
