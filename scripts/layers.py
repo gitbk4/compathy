@@ -19,12 +19,20 @@ Strategy for a pinned layer (``fetch_layer``):
 Fetching by pin means a moved branch or tag can't change what an importer
 reads; the tree sha covers every page under wiki/, not just index.md.
 
+A layer's bytes may come from a *mirror*: a per-user alternate location of
+the same repository, such as a git bundle in a synced shared drive. Mirrors
+live in ~/.compathy/config.json (``mirrors``: canonical source -> mirror
+source). The pin and tree sha are still verified, so a mirror can change
+where the bytes come from but never what a pinned layer contains.
+
 Public API:
     source_to_git_url(source) / git_url_to_source(url)
-    fetch_layer(layer, force=False) -> dict
+    load_mirrors() / effective_source(source)
+    fetch_layer(layer, force=False, via=None) -> dict
     verify_layer(layer) -> dict
     fetch_paths(source, ref, paths, dest, ttl_seconds=None, refresh=False) -> dict
     upstream_head(source, ref="HEAD") -> sha | None
+    probe_upstream(source, path="context") -> {head, tree_sha, date, last_publish}
     repo_toplevel(path), head_sha(repo), tree_sha(repo, rev, relpath),
     is_clean(repo, relpath), remote_source(repo)
 """
@@ -50,10 +58,11 @@ from lineage import (  # noqa: E402
     valid_source,
     write_json_atomic,
 )
-from paths import WIKI_SUBDIR  # noqa: E402
+from paths import LOG_FILE, WIKI_SUBDIR, config_path  # noqa: E402
 
 GIT_TIMEOUT = 180
 META_FILE = ".compathy-fetch.json"
+PROBE_TIMEOUT = 120
 
 
 class LayerFetchError(Exception):
@@ -90,10 +99,44 @@ def _ok(r: subprocess.CompletedProcess) -> bool:
 # ---------- source <-> url ----------
 
 def source_to_git_url(source: str) -> str:
-    """'git+https://x' -> 'https://x'. Rejects unknown schemes."""
+    """'git+https://x' -> 'https://x'. Rejects unknown schemes.
+
+    A ``git+file://`` source that names a bundle file comes back as a plain
+    path: git reads bundles from paths, not from file:// URLs.
+    """
     if not valid_source(source):
         raise LayerFetchError(f"unsupported layer source {source!r} (allowed: git+https, git+ssh, git+file)")
-    return source[len("git+"):]
+    url = source[len("git+"):]
+    if url.startswith("file://"):
+        path = url[len("file://"):]
+        if path.endswith(".bundle") or Path(path).is_file():
+            return path
+    return url
+
+
+def _is_bundle(url: str) -> bool:
+    """True when ``url`` (from source_to_git_url) is a local bundle file."""
+    return "://" not in url and (url.endswith(".bundle") or Path(url).is_file())
+
+
+# ---------- mirrors ----------
+
+def load_mirrors() -> dict:
+    """{canonical source: mirror source} from ~/.compathy/config.json."""
+    cp = config_path()
+    try:
+        data = json.loads(cp.read_text(encoding="utf-8")) if cp.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    mirrors = data.get("mirrors") if isinstance(data, dict) else None
+    if not isinstance(mirrors, dict):
+        return {}
+    return {k: v for k, v in mirrors.items() if valid_source(k) and valid_source(v)}
+
+
+def effective_source(source: str) -> str:
+    """The source to read bytes from: the user's mirror when one is set."""
+    return load_mirrors().get(source, source)
 
 
 def git_url_to_source(url: str) -> Optional[str]:
@@ -224,6 +267,12 @@ def remove_tree(root: Path) -> None:
 def _clone_no_checkout(url: str, dest: Path, depth: Optional[int] = None) -> None:
     """Partial clone (blob:none) with a plain-clone fallback."""
     base = ["clone", "--quiet", "--no-checkout", "--no-recurse-submodules"]
+    if _is_bundle(url):
+        # A bundle is a local file: no filters or depth, just clone it.
+        r = git([*base, url, str(dest)])
+        if not _ok(r):
+            raise LayerFetchError(f"git clone failed for bundle {url}: {r.stderr.strip()[:400]}")
+        return
     if depth:
         base += ["--depth", str(depth)]
     r = git([*base, "--filter=blob:none", url, str(dest)])
@@ -288,9 +337,11 @@ def verify_layer(layer: dict, root: Optional[Path] = None) -> dict:
     return result
 
 
-def fetch_layer(layer: dict, force: bool = False) -> dict:
+def fetch_layer(layer: dict, force: bool = False, via: Optional[str] = None) -> dict:
     """Ensure ``layer`` is cached at its pin and verified.
 
+    ``via`` reads the bytes from another source (a mirror such as a bundle);
+    otherwise the user's configured mirror, else ``layer['source']``.
     Returns {action: 'cached'|'fetched', root, verify}. Raises LayerFetchError
     on any failure; on failure nothing is left behind in the cache dir
     (the clone happens in a sibling temp dir and is renamed only after
@@ -304,7 +355,8 @@ def fetch_layer(layer: dict, force: bool = False) -> dict:
         # Corrupt or partial cache entry: rebuild below (replaced only after
         # the fresh clone verifies, so a failed refetch never loses a good one).
 
-    url = source_to_git_url(layer["source"])
+    src = via or effective_source(layer["source"])
+    url = source_to_git_url(src)
     root.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".fetch-", dir=str(root.parent)))
     dest = tmp / "clone"
@@ -317,10 +369,11 @@ def fetch_layer(layer: dict, force: bool = False) -> dict:
             raise LayerFetchError(
                 f"layer {layer['id']} failed verification: {'; '.join(v['reasons'])}"
             )
-        write_json_atomic(dest / META_FILE, {
-            "id": layer["id"], "pin": layer["pin"], "source": layer["source"],
-            "path": layer.get("path") or "context", "fetched_at": int(time.time()),
-        })
+        meta = {"id": layer["id"], "pin": layer["pin"], "source": layer["source"],
+                "path": layer.get("path") or "context", "fetched_at": int(time.time())}
+        if src != layer["source"]:
+            meta["fetched_from"] = src
+        write_json_atomic(dest / META_FILE, meta)
         make_readonly(dest)
         remove_tree(root)
         os.replace(dest, root)
@@ -336,7 +389,7 @@ def fetch_layer(layer: dict, force: bool = False) -> dict:
 def upstream_head(source: str, ref: str = "HEAD") -> Optional[str]:
     """Return the sha ``ref`` points at on the remote, or None if unreachable."""
     try:
-        url = source_to_git_url(source)
+        url = source_to_git_url(effective_source(source))
         r = git(["ls-remote", url, ref], timeout=60)
     except LayerFetchError:
         return None
@@ -347,6 +400,42 @@ def upstream_head(source: str, ref: str = "HEAD") -> Optional[str]:
         if len(parts) == 2 and SHA_RE.match(parts[0]):
             return parts[0]
     return None
+
+
+def probe_upstream(source: str, path: str = "context") -> dict:
+    """Read the upstream HEAD's wiki tree without touching any cache.
+
+    Fetches HEAD (depth 1; whole bundle for a bundle) into a scratch bare
+    repo and returns {head, tree_sha, date, last_publish}: the wiki tree
+    lets callers tell a real content change from a commit that only touched
+    personas or the README. Raises LayerFetchError when unreachable.
+    """
+    url = source_to_git_url(effective_source(source))
+    rel = (path or "context").strip("/")
+    tmp = Path(tempfile.mkdtemp(prefix="compathy-probe-"))
+    try:
+        r = git(["init", "-q", "--bare", str(tmp)])
+        if not _ok(r):
+            raise LayerFetchError(f"cannot create a scratch repo: {r.stderr.strip()[:200]}")
+        cmd = ["fetch", "--quiet", "--no-tags"]
+        if not _is_bundle(url):
+            cmd += ["--depth", "1"]
+        r = git([*cmd, url, "HEAD"], cwd=tmp, timeout=PROBE_TIMEOUT)
+        if not _ok(r):
+            raise LayerFetchError(f"cannot read {url}: {r.stderr.strip()[:300]}")
+        head = git(["rev-parse", "FETCH_HEAD"], cwd=tmp).stdout.strip()
+        date = git(["log", "-1", "--format=%cs", "FETCH_HEAD"], cwd=tmp).stdout.strip() or None
+        last = None
+        log = git(["show", f"FETCH_HEAD:{rel}/{WIKI_SUBDIR}/{LOG_FILE}"], cwd=tmp)
+        if _ok(log):
+            for line in log.stdout.splitlines():
+                if line.startswith("## [") and "] publish |" in line:
+                    last = line[3:].strip()
+        return {"head": head if SHA_RE.match(head) else None,
+                "tree_sha": tree_sha(tmp, "FETCH_HEAD", f"{rel}/{WIKI_SUBDIR}"),
+                "date": date, "last_publish": last}
+    finally:
+        remove_tree(tmp)
 
 
 def fetch_paths(source: str, ref: str, paths: list, dest: Path,
@@ -382,7 +471,7 @@ def fetch_paths(source: str, ref: str, paths: list, dest: Path,
             if remote == meta.get("sha"):
                 return cached
 
-    url = source_to_git_url(source)
+    url = source_to_git_url(effective_source(source))
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".fetch-", dir=str(dest.parent)))
     clone = tmp / "clone"

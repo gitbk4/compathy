@@ -174,6 +174,10 @@ simple regex.
 | Team page overrides `override: forbidden` org page | lint error `shadow-forbidden` |
 | Team page claims `authority: org` | lint error `authority-claim` |
 | Registry / persona JSON malformed | lint error; search skips with a warning |
+| Publish: scan finding, bad private marker, invalid visibility, lint error in the build | plan lists blockers; apply refuses; the core repo is untouched |
+| Publish: core repo has hand edits | apply and push refuse until the owner commits or discards them |
+| Publish: remote is public, or cannot be checked | push refuses; `--confirm-private` only after the owner checks |
+| Bundle folder missing (drive not synced) | push names the folder; nothing is written |
 | `.ref` target missing | clear error with target path |
 | Corrupt state.json | warning + rebuild from scratch (no data loss) |
 | Mid-write crash | atomic rename prevents partial state files |
@@ -324,10 +328,10 @@ Principles:
    handed out-of-band is re-resolved against the registry; a
    byte-identical match lifts trust from 2 to 4. Signatures (v1.1) only
    add value for files that never touch the registry.
-5. **Least privilege on join.** Three separate consents (fetch, link,
-   toolkit); caches are read-only; `policy.may_edit` tells the agent to
-   keep its hands off parents, which are not in the project's git tree
-   anyway.
+5. **Least privilege on join.** Separate consents (fetch, link, toolkit,
+   and since v0.4.0 watch); caches are read-only; `policy.may_edit` tells
+   the agent to keep its hands off parents, which are not in the project's
+   git tree anyway.
 6. **Provenance survives layering.** Every resolved page carries `layer`;
    every persona carries `provenance`; every import is logged to
    `~/.compathy/import-log.jsonl` and to the wiki `log.md`.
@@ -356,6 +360,69 @@ registry is trusted; team indexes are generated and lint-validated); stale
 org truth (the most likely failure: `status`, `update`, and the
 `lineage:` summary line exist for it). Deliberately not built: accounts,
 tokens, servers, encryption, automatic upward writes, mandatory signatures.
+
+## Publishing a core subset (v0.4.0)
+
+Federation assumed every layer is a whole wiki in a shared repository. In
+practice an owner's wiki mixes common ground (product facts, names, design
+rules) with things that must stay private (customer terms, data notes,
+plans). `/compathy-publish` turns the shareable part into a layer of its
+own, so other functions can link to it the way a team links to an org.
+
+```
+  owner's project (private, any folder)          core repo (private remote, + bundle)
+  context/wiki/  all pages ───── publish ─────▶  context/wiki/   pages with visibility >= audience
+  context/publish.json  config, deny list        context/personas/<role>.json  pinned to the publish
+                                                 README.md, .github/CODEOWNERS
+                                                        │ pin + tree sha (verified)
+                                                        ▼
+  teammate's project: context/lineage.json ──▶ ~/.compathy/layers/<core>/<pin>/  (read-only)
+```
+
+Build order: select pages by `visibility`; cut `<!-- private -->` sections;
+reduce frontmatter to an allowlist; turn links to unpublished pages into
+plain text; generate index, schema, README, CODEOWNERS and the publish log;
+scan every output file; lint the result in a temp dir; diff against the
+core repo. `apply` commits the pages, then commits personas pinned to that
+commit (a persona cannot pin the commit that contains it). `push` sends the
+branch to the remote and writes the bundle.
+
+Design decisions:
+
+1. **Copies, but only one way.** Publishing is the one place compathy
+   copies pages, because the owner's wiki is private and cannot be a layer
+   itself. The core repo is written only by `apply`; teammates never copy
+   from it, they pin it.
+2. **Default deny, per page.** `visibility` lives in the page, so the
+   decision travels with the content and shows up in diffs. Absent means
+   private, so a new page never leaks.
+3. **Fail closed.** An unbalanced private marker, an invalid visibility, a
+   scan finding or a lint error in the built layer blocks the publish.
+4. **Trees, not commits, mean change.** Freshness and `update` compare the
+   wiki tree hash, so persona and README commits never read as news.
+5. **Mirrors, not alternate sources.** A bundle in a shared drive is the
+   same repository at another location. The mapping is per user, so
+   `lineage.json` stays identical for everyone; pins and tree hashes are
+   verified exactly as for the remote.
+
+### Threat model for publishing
+
+| Risk | Control |
+|---|---|
+| A private page is published | Default deny; the plan lists every published page; the owner approves marks |
+| Private detail inside a shared page | `<!-- private -->` sections, fail closed on bad markers |
+| Names of private pages leak through links | Links become the label or the page title; the plan lists every unlinked link |
+| Source file names and local paths leak | Frontmatter allowlist drops `sources`, `related_paths` and custom fields; the scan flags home paths |
+| Secrets, PII or code names in page text | Leak scan blocks; matches are never printed; allow entries need a reason |
+| The core goes to a public repository | Anonymous `ls-remote` guard; `--confirm-private` only on the owner's word |
+| Someone else edits the core | Only `apply` writes it (a dirty repo is refused); CODEOWNERS and branch protection on the remote; drive roles for the bundle |
+| A swapped bundle or a forced push | Teammates verify pin and tree hash; updates are shown and consented before re-pinning. Signed publishes are the next step |
+| Teammates read a stale core | `freshness` (cached six hours, optional SessionStart hook) and `update`'s page-level report |
+| A leak is pushed anyway | Git keeps history: rewrite it, rotate any secret, ask teammates to re-sync. The diff review and the scan exist to stop this first |
+
+Deliberately not built: redaction by an LLM (non-deterministic and not
+reviewable), encryption of the core (use repository and drive access),
+and automatic pushes.
 
 ## Why not tokenize-and-vector-index?
 

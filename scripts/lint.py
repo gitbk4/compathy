@@ -57,6 +57,8 @@ VALID_TYPES = ("concept", "entity", "summary", "index", "log", "patterns")
 # Federation fields (all optional, all additive; see schema.md "Federation").
 VALID_AUTHORITY = ("org", "team", "project")
 VALID_OVERRIDE = ("forbidden", "narrow", "free")
+# Who a page may be published to by /compathy-publish (absent = private).
+VALID_VISIBILITY = ("private", "team", "org", "public")
 
 
 # ---------- flat-YAML parser ----------
@@ -427,6 +429,17 @@ def _check_federation_fields(slug: str, fm: dict, own_role: str = None) -> list:
                 "severity": "error",
                 "slug": slug,
                 "hint": "extends must be a parent layer id, e.g. extends: acme",
+            }
+        )
+    visibility = fm.get("visibility")
+    if visibility is not None and visibility not in VALID_VISIBILITY:
+        issues.append(
+            {
+                "kind": "invalid-visibility",
+                "severity": "error",
+                "slug": slug,
+                "value": visibility,
+                "hint": f"visibility must be one of {VALID_VISIBILITY} (absent means private)",
             }
         )
     return issues

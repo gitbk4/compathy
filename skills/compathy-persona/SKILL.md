@@ -17,11 +17,12 @@ briefing.
 | Subcommand | Who runs it | What it does |
 |---|---|---|
 | `export <role>` | a team lead (or org maintainer) inside their compathy | writes `context/personas/<role>.json` and regenerates `personas/index.json` |
-| `search [query]` | anyone | ranks personas found via the org registry (or `--local`) |
-| `import <file \| https-url \| org/team/role>` | a member, inside the project that should join | plan, consent per category, fetch + verify layers, link, toolkit, briefing |
+| `search [query]` | anyone | ranks personas found via the org registry (or `--local`, or `--source <layer>`) |
+| `import <file \| https-url \| org/team/role \| source#role \| path.bundle#role>` | a member, inside the project that should join | plan, consent per category, fetch + verify layers, link, toolkit, watch, briefing |
 | `sync` | anyone who cloned an already-linked repo | fetches the layers `context/lineage.json` names |
 | `status` | anyone in a linked project | pins, cache, verification, optional upstream check |
-| `update [--layer id]` | project owner | re-pins with an `index.md` diff shown first |
+| `freshness` | anyone in a linked project | has a parent published new pages since the pin? (cached 6h) |
+| `update [--layer id]` | project owner | re-pins after showing changed pages, publish notes, and this project's pages that link to them |
 | `unlink` | project owner | removes `lineage.json` + `persona.json`, keeps the wiki |
 | `whoami` | anyone | active persona + lineage for this project |
 
@@ -141,8 +142,14 @@ link step scaffolds `context/` first.
 ### I1. Plan (no side effects beyond the registry cache)
 
 ```bash
-python3 $P import <file|https-url|org/team/role> --target . [--org ...]
+python3 $P import <file|https-url|org/team/role|source#role|path.bundle#role> --target . [--org ...]
 ```
+
+A **layer source** is a published core (see `/compathy-publish`): the
+private repo, `git+https://github.com/<org>/<core>.git#marketing`, or the
+bundle file kept in a shared drive, `"<path>/<core>.bundle#marketing"`.
+Without `#role` the error lists the roles the layer publishes
+(`search --source <source>` lists them with summaries).
 
 Show the user, compactly:
 
@@ -156,8 +163,12 @@ Show the user, compactly:
   `--force`
 - if `pin_changes` is non-empty: this is an update of an existing link;
   the apply step will print an `index.md` diff per layer
+- if `mirror` is set (an import from a bundle): the layer is read from the
+  bundle on this machine, while `lineage.json` keeps the layer's canonical
+  source, so the file stays the same for every teammate. Pins and tree
+  hashes are verified either way.
 
-### I2. Consent, three separate yes/no questions
+### I2. Consent, four separate yes/no questions
 
 Ask in this order, one at a time, with your harness's interactive prompt:
 
@@ -167,6 +178,9 @@ Ask in this order, one at a time, with your harness's interactive prompt:
    block)?
 3. **toolkit**: register the listed MCP servers in `.mcp.json` and print the
    skill install commands?
+4. **watch** (Claude Code): add a SessionStart hook to
+   `.claude/settings.local.json` that checks, at most every six hours,
+   whether a parent layer was republished, and tells you when it was?
 
 Never run the apply step with a consent the user did not give. If the
 user declines everything, stop; nothing was written.
@@ -179,10 +193,10 @@ and later exports know their id.
 ### I3. Apply
 
 ```bash
-python3 $P import <arg> --target . --apply --consent fetch,link,toolkit [--as team --self-id acme/payments] [--project-name <name>]
+python3 $P import <arg> --target . --apply --consent fetch,link,toolkit,watch [--as team --self-id acme/payments] [--project-name <name>]
 ```
 
-Any subset of `fetch,link,toolkit`. A fetch or verification failure
+Any subset of `fetch,link,toolkit,watch`. A fetch or verification failure
 aborts before anything is linked; report the layer named in the error.
 
 ### I4. The briefing (this is the point of the whole feature)
@@ -227,15 +241,37 @@ the failing layer and its error; nothing else changes.
 
 ```bash
 python3 $P status --target . [--check-upstream]     # network only with the flag
-python3 $P update --target . [--layer <id>] [--to <sha>]   # plan: shows index_diff
-python3 $P update --target . [--layer <id>] --apply         # re-pin after the user reads the diff
+python3 $P freshness --target . [--ttl 0] [--format line]  # one ls-remote per layer, cached 6h
+python3 $P update --target . [--layer <id>] [--to <sha>]   # plan: what changed and what it touches here
+python3 $P update --target . [--layer <id>] --apply         # re-pin after the user reads it
 python3 $P unlink --target .
 python3 $P whoami --target .
 ```
 
-`update` is two-step on purpose: show each layer's `index_diff` (old pin
-to new pin) and ask before `--apply`. Pins are bumped on purpose, never
-pulled from HEAD silently.
+`freshness` compares the upstream's wiki tree with the pinned one, so a
+commit that only touched personas or a README is not news. With
+`--format line` it prints one sentence when a parent was republished and
+nothing otherwise; that is what the watch hook runs. When you see that
+sentence, tell the user and offer `update`.
+
+`update` is two-step on purpose. For each layer that moved, show:
+
+- `changed_pages`: added, modified and removed parent pages, with titles
+- `publish_notes`: the parent's log entries since the old pin (the owner's
+  publish notes)
+- `affected`: this project's pages that link to a modified or removed
+  parent page, or narrow a modified one
+- `index_diff` when the user wants the detail
+
+Ask before `--apply`. Pins are bumped on purpose, never pulled from HEAD
+silently. `same-content` means the upstream moved without changing any
+page; re-pinning is harmless. After applying, revise each `affected` page
+against the parent pages it links to (read them with `compathy_get_page`),
+replace links to removed pages, then run `/compathy` so lint is clean.
+
+Bundle readers: `config set-mirror <canonical source> <path>.bundle` points
+this machine at a different copy of a layer (import sets it for you);
+`config unset-mirror <source>` removes it.
 
 `whoami` renders in under 12 lines: persona id and title, self id/role,
 each layer with pin and cached/verified flags, and `needs_sync`.
@@ -258,8 +294,8 @@ to discovery. Teams ask for a registry entry via PR to the org repo.
 
 ## Rules
 
-1. **Never link without consent, never install without consent.** Three
-   questions, three flags. No consent, no write.
+1. **Never link without consent, never install without consent.** Four
+   questions, four flags. No consent, no write.
 2. **Pins are the truth.** Import and sync refuse a layer whose HEAD or
    wiki tree hash does not match. Do not suggest `--force` to get past a
    verification failure; it only re-fetches.

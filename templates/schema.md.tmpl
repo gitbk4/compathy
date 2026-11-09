@@ -161,6 +161,7 @@ Optional frontmatter, flat YAML, all backwards-compatible:
 | `authority` | `org` \| `team` \| `project` | This page is the owning layer's truth. Must equal the layer's own role. |
 | `override` | `forbidden` \| `narrow` \| `free` | What child layers may do with the same slug. Only meaningful with `authority`. Default `narrow`. |
 | `extends` | a parent layer id | Required on a child page that narrows an authoritative parent page. |
+| `visibility` | `private` \| `team` \| `org` \| `public` | Who `/compathy-publish` may share this page with. Absent means private. |
 
 Shadowing is **opt-in**: only parent pages that declare `authority:` carry
 a policy. Every other same-slug collision (for example each layer's own
@@ -169,6 +170,11 @@ a policy. Every other same-slug collision (for example each layer's own
 Permission control is git: branch protection and CODEOWNERS decide who
 writes a layer; lint decides whether a child respects `authority`; pins
 and tree hashes decide what an importer trusts. compathy has no accounts.
+
+To share part of this wiki with other functions, `/compathy-publish` copies
+the pages whose `visibility` reaches its audience into a private core repo
+that teammates link to as a parent. Inside a shared page,
+`<!-- private -->` ... `<!-- /private -->` marks text that stays here.
 
 ## Policies
 

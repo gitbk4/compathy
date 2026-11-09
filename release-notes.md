@@ -1,3 +1,70 @@
+# v0.4.0: Publish a core subset (owner side of federation)
+
+An owner can now share part of a local wiki with teammates in other
+functions without sharing all of it. Pages marked `visibility: org` are
+published into a private core repo, and optionally a bundle in a shared
+drive. Teammates link their own wikis to that core as a pinned, read-only
+layer and are told when it changes.
+
+Stdlib-only, no new dependencies. Wikis that never publish are unaffected:
+`visibility` is optional and absent means private.
+
+## What's new
+
+- **`/compathy-publish`** (`scripts/publish.py`): `init`, `mark`, `plan`,
+  `apply`, `push`, `status`. The build happens in a temp dir; `apply`
+  commits the pages, then commits personas pinned to that commit.
+- **Visibility.** Optional page field `visibility: private | team | org |
+  public`. A page publishes when it reaches the configured audience. Lint
+  rejects unknown values (`invalid-visibility`).
+- **Private sections.** `<!-- private -->` ... `<!-- /private -->` is cut
+  from published pages. Markers inside code are text. An unbalanced marker
+  blocks the publish.
+- **Safe copies.** Links to unpublished pages become plain text; only
+  allowlisted frontmatter is kept (`sources`, `related_paths` and custom
+  fields stay home); the core gets a generated index, schema, README,
+  CODEOWNERS and a publish log.
+- **Leak scan.** Blocks on the owner's deny patterns, private keys, cloud
+  and chat tokens, API keys, JWTs, secret assignments, SSN- and phone-shaped
+  numbers, personal home paths, and emails outside allowed domains.
+  Findings carry rule, file, line, a masked context and a 12-character
+  fingerprint; the matched text is never printed. False positives need an
+  allow entry with a reason.
+- **Public-remote guard.** `push` runs an anonymous `ls-remote` with every
+  credential source switched off and refuses a repository that answers.
+  When it cannot tell, `--confirm-private` is required.
+- **Bundles and mirrors.** `push` writes a verified git bundle atomically.
+  Teammates import with `"<path>.bundle#role"`; compathy records a per-user
+  mirror (canonical source to bundle) in `~/.compathy/config.json`, so
+  `lineage.json` stays the same for everyone and pins are still verified.
+  `config set-mirror` / `unset-mirror` manage it by hand.
+- **Import from a layer source.** `/compathy-persona import
+  git+https://.../core.git#marketing` reads the persona from the layer's
+  own repository (trust 3); `search --source` lists a layer's personas.
+- **Freshness.** `/compathy-persona freshness` does one `ls-remote` per
+  layer (cached six hours) and compares wiki tree hashes, so persona or
+  README commits are not news. `--format line` prints one sentence or
+  nothing. A fourth import consent, `watch`, installs it as a Claude Code
+  SessionStart hook in `.claude/settings.local.json`; `unlink` removes it.
+  `/compathy` runs it in Phase 0d.
+- **Update report.** `update` now lists added, modified and removed parent
+  pages, the parent's publish notes since the old pin, and this project's
+  pages that link to changed or removed pages (`affected`). A moved
+  upstream with an identical wiki tree reports `same-content`.
+
+## Compatibility
+
+- No `schema_version` bump. New fields and files are optional.
+- Personas written by `/compathy-publish` use the existing manifest format
+  (`provenance.via: compathy-publish`).
+
+## Known limits
+
+- One audience and one core repo per wiki.
+- The scan is a safety net, not a guarantee: the owner reviews the diff.
+  Anything pushed stays in git history until rewritten.
+- Signed publishes and pushing corrections upstream are still to come.
+
 # v0.3.0: Federation (org layer, team layers, personas)
 
 A company can now keep one high-order compathy, teams can keep their own

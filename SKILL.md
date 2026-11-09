@@ -74,10 +74,20 @@ python3 {skill_dir}/scripts/persona.py whoami --target .
     needed; if it fails, continue and expect `layer-not-cached` warnings.
   - Hold the persona's `reads_first` and `policy` in memory: you write only
     this project's `context/`, never anything under `~/.compathy/layers/`.
+  - Check whether a parent was republished since its pin (one `ls-remote`
+    per layer, reused for six hours, silent when current or unreachable):
+    `python3 {skill_dir}/scripts/persona.py freshness --target . --format line`.
+    If it prints a line, show it and offer `/compathy-persona update`.
 - `lineage_error` set: surface it verbatim (lint will also flag it) and
   continue as standalone.
 
 Full federation workflow (export/import/search) lives in `/compathy-persona`.
+Publishing a core subset of this wiki for teammates lives in `/compathy-publish`.
+
+If `context/publish.json` exists, this wiki publishes a core layer. Keep
+each page's `visibility` as it is (only the owner changes it, through
+`/compathy-publish mark`), new pages start private, and never put a page's
+private detail outside its `<!-- private -->` section.
 
 ---
 

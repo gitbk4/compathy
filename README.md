@@ -30,11 +30,12 @@ Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/4
 | **compathy** | `/compathy` | Build/update the compiled wiki for the current project |
 | **compathy-compare** | `/compathy-compare <path>` | Compare two projects' architectures + compatibility |
 | **compathy-augment** | `/compathy-augment <path>` | Learn from another project's strengths and adopt them |
-| **compathy-persona** | `/compathy-persona <export\|search\|import\|sync\|status\|update\|unlink\|whoami>` | Federate wikis across a company: org layer, team layers, and personas that let a member join instantly |
+| **compathy-persona** | `/compathy-persona <export\|search\|import\|sync\|status\|freshness\|update\|unlink\|whoami>` | Federate wikis across a company: org layer, team layers, and personas that let a member join instantly |
+| **compathy-publish** | `/compathy-publish <init\|mark\|plan\|apply\|push\|status>` | Share a core subset of your wiki; teammates link it read-only into their own wikis and stay current |
 
 ## Install
 
-Clone once, then use the installer. By default it installs **all four
+Clone once, then use the installer. By default it installs **all five
 skills**. Pick `--claude` or `--antigravity` for your IDE.
 
 ```bash
@@ -197,7 +198,7 @@ tree hash of their `wiki/`, and cached read-only under `~/.compathy/layers/`
 # new member, in an empty dir or an existing project
 /compathy-persona search "payments backend"    # ranks personas via the org registry
 /compathy-persona import acme/payments/backend-engineer
-#   plan -> three consents (fetch, link, toolkit) -> verified fetch -> link -> briefing
+#   plan -> four consents (fetch, link, toolkit, watch) -> verified fetch -> link -> briefing
 
 # a teammate who cloned an already-linked repo
 /compathy-persona sync                          # lineage.json is enough to rehydrate
@@ -231,6 +232,48 @@ once, then search by name. Full flow in `skills/compathy-persona/SKILL.md`;
 design and threat model in `ARCHITECTURE.md`.
 
 To clear the read-only cache: `chmod -R u+w ~/.compathy/layers && rm -rf ~/.compathy/layers`.
+
+## compathy-publish (share a core of your wiki)
+
+Your own compathy holds everything you know, including what must stay
+private. `/compathy-publish` shares the part that should be common ground
+(product facts, names, design rules) with teammates in other functions.
+They link it into their own wikis as a read-only parent and keep writing
+their own pages.
+
+```
+# owner, inside the full wiki
+/compathy-publish init      # core repo, private remote, optional shared-drive bundle, deny list, personas
+/compathy-publish mark pricing tiers --visibility org
+/compathy-publish plan      # pages, unlinked links, private sections, leak scan, lint, diff
+/compathy-publish apply     # commit the core, then personas pinned to it
+/compathy-publish push      # private remotes only; refreshes the bundle
+
+# teammate, in their own folder
+/compathy-persona import git+https://github.com/acme/pricing-core.git#marketing
+/compathy-persona import "<shared drive>/pricing-core.bundle#marketing"   # no git host access
+/compathy-persona update    # changed pages, publish notes, and your pages that link to them
+```
+
+- **Private by default.** A page publishes only when its `visibility`
+  (private < team < org < public) reaches the audience. `<!-- private -->`
+  sections are cut, links to private pages become plain text, and only
+  allowlisted frontmatter leaves (`sources` and `related_paths` never do).
+- **Leak scan.** A publish stops on your deny list, secrets and tokens,
+  SSN-shaped numbers, personal file paths, and emails outside your domains.
+  Findings name the rule, file, line and a fingerprint, never the match.
+- **Private remotes only.** `push` refuses a repository that answers an
+  anonymous `ls-remote`.
+- **One source of truth.** Teammates pin a commit and verify its tree hash,
+  as with any layer. A bundle in a shared drive is a mirror of the same
+  repository: same pins, same checks, and `lineage.json` stays identical
+  for everyone.
+- **Staying current.** `/compathy-persona freshness` (and an optional
+  session-start hook) tells a teammate when you have published since their
+  pin; `update` lists what changed and which of their pages to revise.
+
+Details and the threat model are in `ARCHITECTURE.md`; the owner's flow is
+in `skills/compathy-publish/SKILL.md`.
 
 ## compathy-augment
 

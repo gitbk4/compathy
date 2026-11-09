@@ -9,17 +9,20 @@ carries ``error``), 2 = usage.
 
     export propose --role R           what a persona for R could contain
     export write   --role R --spec F  write context/personas/R.json (+ index)
-    import ARG                        plan only (file | https URL | org/team/role id)
-    import ARG --apply --consent fetch,link,toolkit [--as team --self-id ID]
-    search [QUERY] [--org SRC] [--local] [--refresh]
+    import ARG                        plan only (file | https URL | org/team/role id |
+                                      layer source or .bundle path, with #role)
+    import ARG --apply --consent fetch,link,toolkit,watch [--as team --self-id ID]
+    search [QUERY] [--org SRC | --source SRC] [--local] [--refresh]
     sync                              fetch missing parent layers from lineage.json
     status [--check-upstream]         pins, cache, verification per layer
-    update [--layer ID] [--to SHA] [--apply]   re-pin with an index.md diff
-    unlink                            remove lineage.json + persona.json
+    freshness [--ttl S] [--format json|line]   has a parent published since the pin?
+    update [--layer ID] [--to SHA] [--apply]   re-pin with page changes, publish notes,
+                                      and this project's pages that link to them
+    unlink                            remove lineage.json + persona.json (+ watch hook)
     whoami                            active persona + lineage for cwd
     resolve SLUG                      which layers have this slug
     registry init --org ID | add-team --id T --source S [--path P]
-    config set-org SRC [--path P] | show
+    config set-org SRC [--path P] | set-mirror SRC MIRROR | unset-mirror SRC | show
 
 Python does the deterministic parts: git pins, tree hashes, fetching,
 verification, JSON writes, ranking. The model interviews, chooses, and
@@ -37,10 +40,13 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import difflib
+import hashlib
 import json
 import os
 import re
+import shlex
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -53,7 +59,7 @@ import discovery  # noqa: E402
 import layers as layers_mod  # noqa: E402
 import lineage as lin  # noqa: E402
 import persona_integration  # noqa: E402
-from lint import iter_wiki_pages, lint as run_lint, parse_frontmatter  # noqa: E402
+from lint import iter_wiki_pages, lint as run_lint, parse_backlinks, parse_frontmatter  # noqa: E402
 from paths import (  # noqa: E402
     INDEX_FILE,
     LOG_FILE,
@@ -80,7 +86,10 @@ REGISTRY_TTL_SECONDS = 6 * 3600
 URL_TIMEOUT = 20
 MAX_URL_BYTES = 1_000_000
 PIN_AGE_WARN_DAYS = 90
-CONSENT_KINDS = ("fetch", "link", "toolkit")
+CONSENT_KINDS = ("fetch", "link", "toolkit", "watch")
+FRESHNESS_TTL_SECONDS = 6 * 3600
+WATCH_MARK = "persona.py freshness"
+CLAUDE_LOCAL_SETTINGS = (".claude", "settings.local.json")
 DEFAULT_TOOLKIT = {
     "claude_skills": [{"name": "compathy", "github": "gitbk4/compathy"}],
     "mcp_servers": [],
@@ -302,16 +311,73 @@ def _fetch_url_json(url: str) -> dict:
         raise PersonaError(f"{url} is not valid JSON: {e}") from e
 
 
-def resolve_manifest_arg(arg: str, org: Optional[dict], refresh: bool = False) -> dict:
-    """Turn a file path, https URL, or persona id into a validated manifest.
+def split_source_arg(arg: str):
+    """'<layer source>#role' or '<path>.bundle#role' -> (source, role | None).
 
-    Returns {manifest, kind: file|url|registry, origin, registry_match}.
-    For file/url manifests, when an org is known the same id is looked up in
-    the registry; a byte-equal match lifts trust to the registry level
-    ("registry re-resolution" - the org is the trust anchor, not the file).
+    Returns None when ``arg`` is not a layer source (a persona file, an
+    https URL to a JSON file, or an org/team/role id).
     """
+    base, _, role = str(arg).partition("#")
+    base = base.strip()
+    if lin.valid_source(base):
+        source = base
+    elif base.startswith("https://") and base.endswith(".git"):
+        source = "git+" + base
+    elif base.endswith(".bundle"):
+        bundle = Path(base).expanduser()
+        if not bundle.is_file():
+            raise PersonaError(f"bundle not found: {bundle} (is the shared drive synced on this machine?)")
+        source = "git+file://" + str(bundle.resolve())
+    else:
+        return None
+    role = role.strip() or None
+    if role is not None and not lin.SLUG_RE.match(role):
+        raise PersonaError(f"role {role!r} must be kebab-case, e.g. marketing")
+    return source, role
+
+
+def _fetch_source_personas(source: str, path: str = "context") -> Path:
+    """Fetch <path>/personas at the source's HEAD; return the local personas dir."""
+    dest = registry_cache_dir() / "sources" / layer_slug(source)
+    rel = f"{path}/{PERSONAS_SUBDIR}"
+    try:
+        r = layers_mod.fetch_paths(source, "HEAD", [rel], dest, ttl_seconds=None, refresh=True)
+    except layers_mod.LayerFetchError as e:
+        raise PersonaError(f"cannot read personas from {source}: {e}") from e
+    return Path(r["root"]) / rel
+
+
+def resolve_manifest_arg(arg: str, org: Optional[dict], refresh: bool = False) -> dict:
+    """Turn a file path, https URL, persona id, or layer source into a validated manifest.
+
+    Returns {manifest, kind: file|url|registry|source, origin, registry_match,
+    mirror}. For file/url/source manifests, when an org is known the same id
+    is looked up in the registry; a byte-equal match lifts trust to the
+    registry level ("registry re-resolution" - the org is the trust anchor,
+    not the file). A source read from somewhere other than the persona's own
+    layer source (a bundle in a shared drive) is returned as ``mirror``.
+    """
+    mirror = None
+    sa = split_source_arg(arg)
     p = Path(arg).expanduser()
-    if p.is_file():
+    if sa is not None:
+        source, role = sa
+        pdir = _fetch_source_personas(source)
+        available = _read_personas_dir(pdir, "", source)
+        roles = ", ".join(f"#{Path(e['file']).stem} ({e['title']})" for e in available) or "none"
+        if not role:
+            raise PersonaError(f"{source} publishes these personas: {roles}. "
+                               f"Import one with <source>#<role>")
+        f = pdir / f"{role}.json"
+        if not f.is_file():
+            raise PersonaError(f"no persona {role!r} at {source}; available: {roles}")
+        data = lin.read_json(f)
+        kind, origin = "source", f"{source}#{role}"
+        if isinstance(data, dict) and isinstance(data.get("layers"), list) and data["layers"]:
+            canonical = (data["layers"][0] or {}).get("source")
+            if lin.valid_source(canonical) and canonical != source:
+                mirror = {"canonical": canonical, "via": source}
+    elif p.is_file():
         data = lin.read_json(p)
         kind, origin = "file", str(p.resolve())
     elif arg.startswith("https://") or arg.startswith("http://"):
@@ -338,7 +404,7 @@ def resolve_manifest_arg(arg: str, org: Optional[dict], refresh: bool = False) -
             match = json.dumps(reg_data, sort_keys=True) == json.dumps(data, sort_keys=True)
         except (PersonaError, lin.LineageError):
             match = False
-    return {"manifest": data, "kind": kind, "origin": origin, "registry_match": match}
+    return {"manifest": data, "kind": kind, "origin": origin, "registry_match": match, "mirror": mirror}
 
 
 def trust_score(kind: str, registry_match: bool, verified: bool) -> tuple:
@@ -356,6 +422,9 @@ def trust_score(kind: str, registry_match: bool, verified: bool) -> tuple:
         return 4, reasons
     if kind == "url":
         reasons.append("fetched from a direct URL (not via the org registry)")
+        return 3, reasons
+    if kind == "source":
+        reasons.append("read from the layer's own repository or bundle (not via an org registry)")
         return 3, reasons
     reasons.append("local file handed out-of-band (not cross-checked against the org registry)")
     return 2, reasons
@@ -583,8 +652,9 @@ def _layer_status(layer: dict) -> dict:
     }
 
 
-def _plan_warnings(manifest: dict, existing: Optional[dict]) -> list:
+def _plan_warnings(manifest: dict, existing: Optional[dict], mirror: Optional[dict] = None) -> list:
     warnings = ["unsigned persona (signature verification arrives in v1.1); trust comes from pins + the org registry"]
+    mirrored = {(mirror or {}).get("canonical")} | set(layers_mod.load_mirrors())
     exported_at = (manifest.get("provenance") or {}).get("exported_at")
     if isinstance(exported_at, str) and len(exported_at) >= 10:
         try:
@@ -595,7 +665,7 @@ def _plan_warnings(manifest: dict, existing: Optional[dict]) -> list:
         except ValueError:
             pass
     for layer in manifest.get("layers", []):
-        if str(layer.get("source", "")).startswith("git+file://"):
+        if str(layer.get("source", "")).startswith("git+file://") and layer.get("source") not in mirrored:
             warnings.append(f"layer {layer.get('id')} uses a local file:// source (fine for tests, not for sharing)")
     if existing and existing.get("persona") and existing.get("persona") != manifest.get("id"):
         warnings.append(f"this project is already linked as {existing.get('persona')}; import will replace it")
@@ -639,12 +709,15 @@ def cmd_import(args) -> dict:
         "toolkit": manifest.get("toolkit") or {},
         "policy": manifest.get("policy") or {},
         "reads_first": manifest.get("reads_first") or [],
-        "warnings": _plan_warnings(manifest, existing),
+        "mirror": res.get("mirror"),
+        "watch": {"hook": _watch_command(), "file": str(target.joinpath(*CLAUDE_LOCAL_SETTINGS)),
+                  "checks": "once a day at session start: has a parent layer published since its pin?"},
+        "warnings": _plan_warnings(manifest, existing, res.get("mirror")),
         "consent_kinds": list(CONSENT_KINDS),
     }
     if not args.apply:
         plan["next"] = ("ask the user per category, then run again with --apply "
-                        "--consent fetch,link,toolkit (any subset)")
+                        "--consent fetch,link,toolkit,watch (any subset)")
         return plan
 
     consent = {c.strip() for c in (args.consent or "").split(",") if c.strip()}
@@ -658,16 +731,22 @@ def cmd_import(args) -> dict:
 
     result = dict(plan)
     result.update({"fetched": [], "linked": False, "written": [], "toolkit_actions": {},
-                   "briefing": [], "index_diffs": []})
+                   "briefing": [], "index_diffs": [], "watch_action": None, "mirror_saved": None})
 
-    # 1. fetch
+    # 1. fetch (the exporting layer through the mirror it was found at, if any)
+    mirror = res.get("mirror")
     if "fetch" in consent:
-        for layer in manifest["layers"]:
+        for i, layer in enumerate(manifest["layers"]):
+            via = mirror["via"] if mirror and i == 0 and layer.get("source") == mirror["canonical"] else None
             try:
-                r = layers_mod.fetch_layer(layer, force=args.force)
+                r = layers_mod.fetch_layer(layer, force=args.force, via=via)
             except layers_mod.LayerFetchError as e:
                 raise PersonaError(f"fetch aborted, nothing linked: {e}") from e
-            result["fetched"].append({"id": layer["id"], "action": r["action"], "root": r["root"]})
+            result["fetched"].append({"id": layer["id"], "action": r["action"], "root": r["root"],
+                                      "via": via})
+        if mirror:
+            _save_mirror(mirror["canonical"], mirror["via"])
+            result["mirror_saved"] = mirror
     result["layers"] = [_layer_status(l) for l in manifest["layers"]]
     verified = all(s["verified"] for s in result["layers"])
     trust, reasons = trust_score(res["kind"], res["registry_match"], verified)
@@ -693,6 +772,10 @@ def cmd_import(args) -> dict:
     # 3. toolkit
     if "toolkit" in consent:
         result["toolkit_actions"] = _apply_toolkit(target, manifest)
+
+    # 3b. watch: a SessionStart hook that runs `freshness` (Claude Code only)
+    if "watch" in consent:
+        result["watch_action"] = _install_watch_hook(target)
 
     # 4. briefing material (paths the model reads to brief the new member)
     all_layers = lin.resolve_layers(target) if lineage_path(target).is_file() else None
@@ -856,6 +939,90 @@ def _apply_toolkit(target: Path, manifest: dict) -> dict:
     return actions
 
 
+# ---------- mirrors and the watch hook ----------
+
+def _save_mirror(canonical: str, via: str) -> None:
+    """Remember that ``canonical`` is read from ``via`` on this machine."""
+    cfg = _load_config()
+    mirrors = cfg.get("mirrors") if isinstance(cfg.get("mirrors"), dict) else {}
+    mirrors[canonical] = via
+    cfg["mirrors"] = mirrors
+    lin.write_json_atomic(config_path(), cfg)
+
+
+def _watch_command() -> str:
+    script = shlex.quote(str(Path(__file__).resolve()))
+    return (f'python3 {script} freshness --target "$CLAUDE_PROJECT_DIR" '
+            f'--ttl {FRESHNESS_TTL_SECONDS} --format line')
+
+
+def _local_settings(target: Path) -> Path:
+    return Path(target).joinpath(*CLAUDE_LOCAL_SETTINGS)
+
+
+def _without_watch(groups) -> list:
+    out = []
+    for g in groups if isinstance(groups, list) else []:
+        if not isinstance(g, dict):
+            out.append(g)
+            continue
+        hooks = [h for h in g.get("hooks") or []
+                 if not (isinstance(h, dict) and WATCH_MARK in str(h.get("command", "")))]
+        if hooks:
+            out.append({**g, "hooks": hooks})
+    return out
+
+
+def _install_watch_hook(target: Path) -> str:
+    """Add (or refresh) the SessionStart hook in .claude/settings.local.json.
+
+    settings.local.json is per-user, so the absolute script path in the
+    command never leaks into a teammate's checkout.
+    """
+    path = _local_settings(target)
+    data = {}
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "skipped-malformed"
+        if not isinstance(data, dict):
+            return "skipped-malformed"
+    hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    before = json.dumps(hooks.get("SessionStart"), sort_keys=True)
+    groups = _without_watch(hooks.get("SessionStart"))
+    groups.append({"hooks": [{"type": "command", "command": _watch_command(), "timeout": 30}]})
+    hooks["SessionStart"] = groups
+    data["hooks"] = hooks
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return "unchanged" if before == json.dumps(groups, sort_keys=True) else "installed"
+
+
+def _remove_watch_hook(target: Path) -> Optional[str]:
+    path = _local_settings(target)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict) or "SessionStart" not in hooks:
+        return None
+    groups = _without_watch(hooks["SessionStart"])
+    if groups == hooks["SessionStart"]:
+        return None
+    if groups:
+        hooks["SessionStart"] = groups
+    else:
+        hooks.pop("SessionStart")
+    if not hooks:
+        data.pop("hooks")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return str(path)
+
+
 # ---------- search ----------
 
 def cmd_search(args) -> dict:
@@ -870,6 +1037,16 @@ def cmd_search(args) -> dict:
         entries = compathy_query._local_persona_entries(target)
         for e in entries:
             e["trust"] = None
+    elif getattr(args, "source", None):
+        sa = split_source_arg(args.source)
+        if sa is None:
+            raise PersonaError("--source must be a git+... layer source or an existing .bundle file")
+        pdir = _fetch_source_personas(sa[0])
+        org_used = {"source": sa[0], "kind": "layer source"}
+        for e in _read_personas_dir(pdir, "", sa[0]):
+            e["trust"] = 3
+            e["import"] = f"{args.source.split('#', 1)[0]}#{Path(e['file']).stem}"
+            entries.append(e)
     else:
         org = _org_ref(args, target)
         if org is None:
@@ -988,25 +1165,229 @@ def cmd_update(args) -> dict:
             continue
         root = lin.layer_cache_root(candidate)
         candidate["tree_sha"] = layers_mod.tree_sha(root, "HEAD", f"{candidate['path']}/{WIKI_SUBDIR}")
+        if layer.get("tree_sha") and candidate["tree_sha"] == layer["tree_sha"]:
+            # A commit that touched only personas or the README: same pages.
+            changes.append({"id": layer["id"], "status": "same-content", "old": layer["pin"], "new": new_pin,
+                            "note": "upstream moved, but its wiki/ is identical to the pinned one"})
+            new_layers.append(candidate)
+            continue
         if lin.is_layer_cached(layer):
             diff = _index_diff(layer, candidate) or "(index.md unchanged between pins; other pages may differ)"
         else:
             diff = "(old pin not cached; no index.md diff available)"
+        pages = _page_changes(layer, candidate)
         ch = {"id": layer["id"], "status": "changed", "old": layer["pin"], "new": new_pin,
-              "new_tree_sha": candidate["tree_sha"], "index_diff": diff}
+              "new_tree_sha": candidate["tree_sha"], "index_diff": diff,
+              "changed_pages": pages, "publish_notes": _new_log_entries(layer, candidate),
+              "affected": _affected_pages(target, pages)}
         changes.append(ch)
         new_layers.append(candidate)
     applied = False
-    if args.apply and any(c["status"] == "changed" for c in changes):
+    if args.apply and any(c["status"] in ("changed", "same-content") for c in changes):
         doc["layers"] = new_layers
         doc["updated_at"] = _now_iso()
         lin.save_lineage(target, doc)
         discovery.write_discovery_breadcrumbs(target, target.name)
-        _append_log(target, "update", "re-pinned parent layers",
-                    [f"{c['id']}: {c['old'][:12]} -> {c['new'][:12]}" for c in changes if c["status"] == "changed"])
+        moved = [c for c in changes if c["status"] in ("changed", "same-content")]
+        details = [f"{c['id']}: {c['old'][:12]} -> {c['new'][:12]}" for c in moved]
+        for c in moved:
+            pg = c.get("changed_pages") or {}
+            for key in ("added", "modified", "removed"):
+                if pg.get(key):
+                    details.append(f"{c['id']} {key}: {', '.join(p['slug'] for p in pg[key])}")
+            if c.get("affected"):
+                details.append(f"review here: {', '.join(a['slug'] for a in c['affected'])}")
+        _append_log(target, "update", "re-pinned parent layers", details)
         applied = True
     return {"persona": doc.get("persona"), "changes": changes, "applied": applied,
-            "next": None if applied else "review index_diff per layer, then run again with --apply"}
+            "next": ("revise the pages listed under affected against the changed parent pages, "
+                     "then run /compathy" if applied and any(c.get("affected") for c in changes) else
+                     None if applied else
+                     "review changed_pages, publish_notes and affected per layer, then run again with --apply")}
+
+
+def _wiki_hashes(layer: dict) -> dict:
+    """slug -> (sha256 of the page, title) for one cached layer; {} when not cached."""
+    out = {}
+    if not lin.is_layer_cached(layer):
+        return out
+    for slug, path in iter_wiki_pages(lin.layer_wiki_dir(layer)):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        title = slug
+        for line in text.splitlines():
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+        out[slug] = (hashlib.sha256(text.encode("utf-8")).hexdigest(), title)
+    return out
+
+
+def _page_changes(old_layer: dict, new_layer: dict) -> dict:
+    """Pages added, modified and removed between two pins of one layer."""
+    old, new = _wiki_hashes(old_layer), _wiki_hashes(new_layer)
+    if not old:
+        return {"old_cached": False, "added": [], "modified": [], "removed": [],
+                "note": "old pin not cached; page-level changes unknown"}
+    return {
+        "old_cached": True,
+        "added": [{"slug": s, "title": new[s][1]} for s in sorted(set(new) - set(old))],
+        "modified": [{"slug": s, "title": new[s][1]} for s in sorted(set(new) & set(old))
+                     if new[s][0] != old[s][0]],
+        "removed": [{"slug": s, "title": old[s][1]} for s in sorted(set(old) - set(new))],
+    }
+
+
+def _log_entries(layer: dict) -> list:
+    """[(header, [detail lines])] from a cached layer's log.md."""
+    path = lin.layer_wiki_dir(layer) / LOG_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        if line.startswith("## ["):
+            out.append((line[3:].strip(), []))
+        elif out and line.startswith("- "):
+            out[-1][1].append(line[2:].strip())
+    return out
+
+
+def _new_log_entries(old_layer: dict, new_layer: dict) -> list:
+    """Log entries in the new pin that the old pin did not have (publish notes)."""
+    seen = {h for h, _ in _log_entries(old_layer)}
+    return [{"entry": h, "details": d} for h, d in _log_entries(new_layer) if h not in seen]
+
+
+def _affected_pages(target: Path, pages: dict) -> list:
+    """This project's own pages that link to (or narrow) changed parent pages."""
+    modified = {p["slug"] for p in pages.get("modified") or []}
+    removed = {p["slug"] for p in pages.get("removed") or []}
+    if not modified and not removed:
+        return []
+    out = []
+    for slug, path in iter_wiki_pages(wiki_dir(target)):
+        try:
+            fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if fm.get("provenance") == "from-persona":
+            continue  # the seeded persona page only lists reads_first
+        links = set(parse_backlinks(body))
+        hit_mod = sorted(links & modified)
+        hit_rem = sorted(links & removed)
+        narrows = slug in modified and bool(fm.get("extends"))
+        if hit_mod or hit_rem or narrows:
+            item = {"slug": slug, "path": str(path)}
+            if hit_mod:
+                item["links_to_changed"] = hit_mod
+            if hit_rem:
+                item["links_to_removed"] = hit_rem
+            if narrows:
+                item["narrows_changed_page"] = True
+            out.append(item)
+    return out
+
+
+# ---------- freshness ----------
+
+def _upstream_cache_path() -> Path:
+    return state_home() / "cache" / "upstream.json"
+
+
+def _load_upstream_cache() -> dict:
+    try:
+        data = json.loads(_upstream_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _pin_date(layer: dict) -> Optional[str]:
+    root = lin.layer_cache_root(layer)
+    if not (root / ".git").exists():
+        return None
+    r = layers_mod.git(["log", "-1", "--format=%cs", "HEAD"], cwd=root, timeout=30)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def cmd_freshness(args) -> dict:
+    """Has any parent layer published new pages since this project's pin?
+
+    One ``ls-remote`` per layer, cached for ``--ttl`` seconds. When the
+    upstream HEAD differs from the pin, a scratch fetch reads its wiki tree,
+    so a commit that only touched personas or the README never reads as
+    news. ``--format line`` prints one sentence for a SessionStart hook, or
+    nothing when everything is current; it never fails a session start.
+    """
+    target = Path(args.target).resolve()
+    try:
+        doc = lin.load_lineage(target)
+    except lin.LineageError:
+        doc = None
+    if not doc:
+        return {"linked": False, "layers": [], "behind": [], "line": None}
+    cache = _load_upstream_cache()
+    now = int(time.time())
+    rows = []
+    for layer in doc["layers"]:
+        key = layer["source"]
+        ent = cache.get(key) if isinstance(cache.get(key), dict) else None
+        fresh = bool(ent) and args.ttl is not None and now - int(ent.get("checked_at", 0)) < args.ttl
+        if not fresh:
+            prev = ent or {}
+            head = layers_mod.upstream_head(layer["source"])
+            ent = {"head": head, "checked_at": now}
+            if head and head != layer["pin"]:
+                if prev.get("head") == head and prev.get("tree_sha"):
+                    ent.update({k: prev.get(k) for k in ("tree_sha", "date", "last_publish")})
+                else:
+                    try:
+                        ent.update({k: v for k, v in layers_mod.probe_upstream(
+                            layer["source"], layer.get("path") or "context").items() if k != "head"})
+                    except layers_mod.LayerFetchError:
+                        pass
+            cache[key] = ent
+        head = ent.get("head")
+        if head is None:
+            state = "unreachable"
+        elif head == layer["pin"]:
+            state = "current"
+        elif ent.get("tree_sha") and ent["tree_sha"] == layer.get("tree_sha"):
+            state = "current"
+        elif ent.get("tree_sha"):
+            state = "behind"
+        else:
+            state = "differs"
+        rows.append({"id": layer["id"], "state": state, "pin": layer["pin"], "upstream_head": head,
+                     "pin_date": _pin_date(layer), "upstream_date": ent.get("date"),
+                     "last_publish": ent.get("last_publish"),
+                     "checked_at": ent.get("checked_at"), "from_cache": fresh})
+    try:
+        lin.write_json_atomic(_upstream_cache_path(), cache)
+    except OSError:
+        pass
+    behind = [r for r in rows if r["state"] == "behind"]
+    line = None
+    if behind:
+        parts = []
+        for r in behind:
+            s = f"{r['id']} has a newer publish"
+            if r.get("upstream_date"):
+                s += f" ({r['upstream_date']}"
+                s += f": {r['last_publish'].split('|', 1)[-1].strip()})" if r.get("last_publish") else ")"
+            if r.get("pin_date"):
+                s += f"; this project still reads the version from {r['pin_date']}"
+            parts.append(s)
+        line = ("compathy: " + ". ".join(parts) + ". Tell the user and offer "
+                "/compathy-persona update, which lists the changed pages and the pages here that link to them.")
+    return {"linked": True, "persona": doc.get("persona"), "layers": rows,
+            "behind": [r["id"] for r in behind], "line": line}
 
 
 def _remove_persona_entity(target: Path, persona_id: Optional[str]) -> Optional[Path]:
@@ -1045,6 +1426,9 @@ def cmd_unlink(args) -> dict:
     page = _remove_persona_entity(target, doc.get("persona"))
     if page is not None:
         removed.append(str(page))
+    hook = _remove_watch_hook(target)
+    if hook is not None:
+        removed.append(f"{hook} (watch hook)")
     discovery.write_discovery_breadcrumbs(target, target.name)
     _append_log(target, "unlink", f"removed lineage (was {doc.get('persona')})",
                 ["layer caches under ~/.compathy/layers were kept"]
@@ -1160,7 +1544,24 @@ def cmd_config(args) -> dict:
         cfg["default_org"] = {"source": args.source, "path": args.path or "context"}
         lin.write_json_atomic(config_path(), cfg)
         return {"path": str(config_path()), "config": cfg}
-    raise PersonaError("config: use show or set-org")
+    if args.config_cmd == "set-mirror":
+        mirror = args.mirror
+        if not lin.valid_source(mirror):
+            sa = split_source_arg(mirror)
+            if sa is None:
+                raise PersonaError("mirror must be a git+... source or an existing .bundle file")
+            mirror = sa[0]
+        if not lin.valid_source(args.source):
+            raise PersonaError(f"source must start with one of {lin.SOURCE_SCHEMES}")
+        _save_mirror(args.source, mirror)
+        return {"path": str(config_path()), "config": _load_config()}
+    if args.config_cmd == "unset-mirror":
+        mirrors = cfg.get("mirrors") if isinstance(cfg.get("mirrors"), dict) else {}
+        removed = mirrors.pop(args.source, None)
+        cfg["mirrors"] = mirrors
+        lin.write_json_atomic(config_path(), cfg)
+        return {"path": str(config_path()), "removed": removed, "config": cfg}
+    raise PersonaError("config: use show, set-org, set-mirror or unset-mirror")
 
 
 # ---------- CLI ----------
@@ -1196,12 +1597,13 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--allow-dirty", action="store_true")
             p.add_argument("--allow-lint-errors", action="store_true")
 
-    im = sub.add_parser("import", help="plan or apply an import (file | https url | org/team/role)")
+    im = sub.add_parser("import", help="plan or apply an import (file | https url | org/team/role | "
+                                       "layer source or .bundle path with #role)")
     _tgt(im)
     _org(im)
     im.add_argument("persona")
     im.add_argument("--apply", action="store_true")
-    im.add_argument("--consent", default="", help="comma list of fetch,link,toolkit")
+    im.add_argument("--consent", default="", help="comma list of fetch,link,toolkit,watch")
     im.add_argument("--as", dest="as_role", default="project", choices=("project", "team"),
                     help="what this repo becomes in the lineage (default project)")
     im.add_argument("--self-id", default=None, help="this layer's id when --as team (e.g. acme/payments)")
@@ -1213,6 +1615,8 @@ def build_parser() -> argparse.ArgumentParser:
     _org(se)
     se.add_argument("query", nargs="?", default="")
     se.add_argument("--local", action="store_true", help="no network: only local personas")
+    se.add_argument("--source", default=None,
+                    help="list the personas one layer publishes (git+... source or .bundle path)")
     se.add_argument("--max", type=int, default=10)
 
     sy = sub.add_parser("sync", help="fetch missing parent layers from lineage.json")
@@ -1222,6 +1626,13 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", help="pins, cache and verification per layer")
     _tgt(st)
     st.add_argument("--check-upstream", action="store_true", help="git ls-remote each layer (network)")
+
+    fr = sub.add_parser("freshness", help="has a parent layer published since this project's pin?")
+    _tgt(fr)
+    fr.add_argument("--ttl", type=int, default=FRESHNESS_TTL_SECONDS,
+                    help="reuse an upstream check younger than this many seconds (0 = always check)")
+    fr.add_argument("--format", choices=("json", "line"), default="json",
+                    help="line: one sentence when a parent moved, nothing otherwise (for hooks)")
 
     up = sub.add_parser("update", help="re-pin parent layers with an index.md diff")
     _tgt(up)
@@ -1257,6 +1668,11 @@ def build_parser() -> argparse.ArgumentParser:
     so = cfs.add_parser("set-org")
     so.add_argument("source")
     so.add_argument("--path", default=None)
+    sm = cfs.add_parser("set-mirror", help="read SOURCE from MIRROR on this machine (e.g. a synced bundle)")
+    sm.add_argument("source")
+    sm.add_argument("mirror")
+    um = cfs.add_parser("unset-mirror")
+    um.add_argument("source")
     return ap
 
 
@@ -1274,6 +1690,17 @@ def main(argv=None) -> int:
             out = cmd_sync(args)
         elif args.cmd == "status":
             out = cmd_status(args)
+        elif args.cmd == "freshness":
+            if args.format == "line":
+                # Hook mode: one sentence or nothing, and never a failing exit.
+                try:
+                    line = cmd_freshness(args).get("line")
+                except Exception:  # pylint: disable=broad-except
+                    line = None
+                if line:
+                    print(line)
+                return 0
+            out = cmd_freshness(args)
         elif args.cmd == "update":
             out = cmd_update(args)
         elif args.cmd == "unlink":
