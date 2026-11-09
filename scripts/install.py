@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install compathy skills for Claude Code or Antigravity.
+"""Install compathy skills for Claude Code, Antigravity, or any agent that loads SKILL.md skills.
 
 Installs the main compathy skill plus optional subskills (compare, augment, persona, publish).
 Default: install all skills. Use --skill to install a specific one.
@@ -10,6 +10,7 @@ a directory copy on platforms where symlinks are restricted.
 Usage:
   python3 scripts/install.py --claude                       # all skills, global
   python3 scripts/install.py --antigravity                  # all skills, global
+  python3 scripts/install.py --dir PATH                     # any agent: its skills folder
   python3 scripts/install.py --claude --skill compare       # just compathy-compare
   python3 scripts/install.py --claude --skill persona       # just compathy-persona
   python3 scripts/install.py --claude --skill publish       # just compathy-publish
@@ -45,7 +46,9 @@ TOOL_BASES = {
 
 
 def resolve_dest(tool: str, scope: str, symlink_name: str) -> Path:
-    """Resolve the destination path for the skill."""
+    """Resolve the destination path for the skill (``--dir`` passes its folder as scope)."""
+    if tool == "dir":
+        return Path(scope) / symlink_name
     anchor_kind, base = TOOL_BASES[(tool, scope)]
     anchor = Path.home() if anchor_kind == "home" else Path.cwd()
     return anchor / base / symlink_name
@@ -138,8 +141,10 @@ def run_install(tool: str, scope: str, skill_keys: list) -> int:
         if tool == "claude":
             names = [SKILLS[k][0] for k in skill_keys]
             print(f"  In Claude Code, run: /{names[0]}")
-        else:
+        elif tool == "antigravity":
             print("  In Antigravity, invoke via the skill description trigger")
+        else:
+            print("  In your agent, invoke a skill by name (for example /compathy) or by its description")
     return 0 if ok else 1
 
 
@@ -158,7 +163,7 @@ def run_uninstall(tool: str, scope: str, skill_keys: list) -> int:
 def main() -> int:
     """Main entry point for the installation script."""
     ap = argparse.ArgumentParser(
-        description="Install compathy skills for Claude Code or Antigravity",
+        description="Install compathy skills for Claude Code, Antigravity, or any agent that loads SKILL.md skills",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -167,6 +172,8 @@ def main() -> int:
                             help="install for Claude Code")
     tool_group.add_argument("--antigravity", action="store_true",
                             help="install for Google Antigravity")
+    tool_group.add_argument("--dir", metavar="PATH",
+                            help="install into any agent's skills folder (agents that load SKILL.md skills)")
     ap.add_argument("--workspace", action="store_true",
                     help="install into current workspace instead of global")
     ap.add_argument("--skill", choices=["main", "compare", "augment", "persona", "publish", "all"],
@@ -176,8 +183,11 @@ def main() -> int:
                     help="remove installed skill(s)")
     args = ap.parse_args()
 
-    tool = "claude" if args.claude else "antigravity"
-    scope = "workspace" if args.workspace else "global"
+    if args.dir:
+        tool, scope = "dir", str(Path(args.dir).expanduser().resolve())
+    else:
+        tool = "claude" if args.claude else "antigravity"
+        scope = "workspace" if args.workspace else "global"
     skill_keys = list(SKILLS.keys()) if args.skill == "all" else [args.skill]
 
     if args.uninstall:

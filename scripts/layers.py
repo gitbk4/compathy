@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position
 from lineage import (  # noqa: E402
     SHA_RE,
+    is_online_source,
     layer_cache_root,
     valid_source,
     write_json_atomic,
@@ -134,9 +135,23 @@ def load_mirrors() -> dict:
     return {k: v for k, v in mirrors.items() if valid_source(k) and valid_source(v)}
 
 
+def candidate_sources(source: str) -> list:
+    """Where to read ``source`` from, in order of preference.
+
+    An online source of truth comes first and the user's mirror (a bundle)
+    is the fallback, so anyone who can reach the repository never reads a
+    stale copy. A local canonical source (tests, air-gapped setups) is most
+    likely a path on someone else's machine, so its mirror comes first.
+    """
+    mirror = load_mirrors().get(source)
+    if not mirror or mirror == source:
+        return [source]
+    return [source, mirror] if is_online_source(source) else [mirror, source]
+
+
 def effective_source(source: str) -> str:
-    """The source to read bytes from: the user's mirror when one is set."""
-    return load_mirrors().get(source, source)
+    """The first source to try for ``source`` (see candidate_sources)."""
+    return candidate_sources(source)[0]
 
 
 def git_url_to_source(url: str) -> Optional[str]:
@@ -340,8 +355,8 @@ def verify_layer(layer: dict, root: Optional[Path] = None) -> dict:
 def fetch_layer(layer: dict, force: bool = False, via: Optional[str] = None) -> dict:
     """Ensure ``layer`` is cached at its pin and verified.
 
-    ``via`` reads the bytes from another source (a mirror such as a bundle);
-    otherwise the user's configured mirror, else ``layer['source']``.
+    ``via`` reads the bytes from one given source (a mirror such as a
+    bundle); otherwise ``candidate_sources`` decides, online source first.
     Returns {action: 'cached'|'fetched', root, verify}. Raises LayerFetchError
     on any failure; on failure nothing is left behind in the cache dir
     (the clone happens in a sibling temp dir and is renamed only after
@@ -355,7 +370,20 @@ def fetch_layer(layer: dict, force: bool = False, via: Optional[str] = None) -> 
         # Corrupt or partial cache entry: rebuild below (replaced only after
         # the fresh clone verifies, so a failed refetch never loses a good one).
 
-    src = via or effective_source(layer["source"])
+    errors = []
+    for src in ([via] if via else candidate_sources(layer["source"])):
+        try:
+            v = _fetch_from(layer, src, root)
+            return {"action": "fetched", "root": str(root), "verify": v, "from": src}
+        except LayerFetchError as e:
+            errors.append((src, str(e)))
+    if len(errors) == 1:
+        raise LayerFetchError(errors[0][1])
+    raise LayerFetchError("; ".join(f"from {s}: {msg}" for s, msg in errors))
+
+
+def _fetch_from(layer: dict, src: str, root: Path) -> dict:
+    """Clone ``layer`` at its pin from ``src``, verify it, and move it into ``root``."""
     url = source_to_git_url(src)
     root.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".fetch-", dir=str(root.parent)))
@@ -381,36 +409,49 @@ def fetch_layer(layer: dict, force: bool = False, via: Optional[str] = None) -> 
         remove_tree(tmp)
         raise
     remove_tree(tmp)
-    return {"action": "fetched", "root": str(root), "verify": v}
+    return v
 
 
 # ---------- small sparse fetches (registries, persona indexes) ----------
 
-def upstream_head(source: str, ref: str = "HEAD") -> Optional[str]:
-    """Return the sha ``ref`` points at on the remote, or None if unreachable."""
-    try:
-        url = source_to_git_url(effective_source(source))
-        r = git(["ls-remote", url, ref], timeout=60)
-    except LayerFetchError:
-        return None
-    if not _ok(r):
-        return None
-    for line in r.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and SHA_RE.match(parts[0]):
-            return parts[0]
+def upstream_head(source: str, ref: str = "HEAD", timeout: int = 60) -> Optional[str]:
+    """Return the sha ``ref`` points at upstream, or None if unreachable.
+
+    Tries the online source first, then the user's mirror (candidate_sources).
+    """
+    for src in candidate_sources(source):
+        try:
+            r = git(["ls-remote", source_to_git_url(src), ref], timeout=timeout)
+        except LayerFetchError:
+            continue
+        if not _ok(r):
+            continue
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and SHA_RE.match(parts[0]):
+                return parts[0]
     return None
 
 
-def probe_upstream(source: str, path: str = "context") -> dict:
+def probe_upstream(source: str, path: str = "context", timeout: int = PROBE_TIMEOUT) -> dict:
     """Read the upstream HEAD's wiki tree without touching any cache.
 
     Fetches HEAD (depth 1; whole bundle for a bundle) into a scratch bare
     repo and returns {head, tree_sha, date, last_publish}: the wiki tree
     lets callers tell a real content change from a commit that only touched
-    personas or the README. Raises LayerFetchError when unreachable.
+    personas or the README. Tries the online source first, then the mirror.
+    Raises LayerFetchError when neither is reachable.
     """
-    url = source_to_git_url(effective_source(source))
+    last_error = None
+    for src in candidate_sources(source):
+        try:
+            return _probe(source_to_git_url(src), path, timeout)
+        except LayerFetchError as e:
+            last_error = e
+    raise last_error or LayerFetchError(f"cannot read {source}")
+
+
+def _probe(url: str, path: str, timeout: int) -> dict:
     rel = (path or "context").strip("/")
     tmp = Path(tempfile.mkdtemp(prefix="compathy-probe-"))
     try:
@@ -420,7 +461,7 @@ def probe_upstream(source: str, path: str = "context") -> dict:
         cmd = ["fetch", "--quiet", "--no-tags"]
         if not _is_bundle(url):
             cmd += ["--depth", "1"]
-        r = git([*cmd, url, "HEAD"], cwd=tmp, timeout=PROBE_TIMEOUT)
+        r = git([*cmd, url, "HEAD"], cwd=tmp, timeout=timeout)
         if not _ok(r):
             raise LayerFetchError(f"cannot read {url}: {r.stderr.strip()[:300]}")
         head = git(["rev-parse", "FETCH_HEAD"], cwd=tmp).stdout.strip()
@@ -471,18 +512,24 @@ def fetch_paths(source: str, ref: str, paths: list, dest: Path,
             if remote == meta.get("sha"):
                 return cached
 
-    url = source_to_git_url(effective_source(source))
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".fetch-", dir=str(dest.parent)))
     clone = tmp / "clone"
     try:
-        try:
-            _clone_no_checkout(url, clone, depth=1)
-        except LayerFetchError:
+        last_error = None
+        for src in candidate_sources(source):
+            try:
+                _clone_no_checkout(source_to_git_url(src), clone, depth=1)
+                last_error = None
+                break
+            except LayerFetchError as e:
+                last_error = e
+                remove_tree(clone)
+        if last_error is not None:
             if (dest / ".git").exists():
                 # Unreachable but we have a previous fetch: serve stale, flag it.
                 return {"action": "stale", "root": str(dest), "sha": None, "fetched_at": None}
-            raise
+            raise last_error
         _sparse(clone, [p.strip("/") for p in paths])
         _checkout(clone, ref)
         sha = head_sha(clone)

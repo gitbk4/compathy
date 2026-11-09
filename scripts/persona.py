@@ -97,7 +97,15 @@ DEFAULT_TOOLKIT = {
 
 
 class PersonaError(Exception):
-    """User-facing failure; rendered as {"error": ...} with exit 1."""
+    """User-facing failure; rendered as {"error": ...} with exit 1.
+
+    Keyword arguments (for example ``needs="online-source"``) are added to
+    that JSON so the skill can act on them.
+    """
+
+    def __init__(self, message: str, **extra):
+        super().__init__(message)
+        self.extra = extra
 
 
 # ---------- small helpers ----------
@@ -458,16 +466,54 @@ def _self_layer(target: Path, args) -> dict:
         )
     role = getattr(args, "layer_role", None) or selfd.get("role") or ("org" if not doc else "project")
     source = getattr(args, "source", None) or layers_mod.remote_source(repo)
-    if not lin.valid_source(source):
-        raise PersonaError(
-            "cannot determine this repo's git source (no 'origin' remote?); pass --source git+https://..."
-        )
+    if source is not None and not lin.valid_source(source):
+        raise PersonaError(f"--source must start with one of {lin.SOURCE_SCHEMES}")
+    parents = [_strip_layer(l) for l in (doc or {}).get("layers", [])]
     return {
         "id": layer_id, "role": role, "source": source, "path": ctx_rel,
         "pin": pin, "tree_sha": tree, "repo": str(repo),
         "clean": layers_mod.is_clean(repo, ctx_rel),
-        "parents": [_strip_layer(l) for l in (doc or {}).get("layers", [])],
+        "parents": parents,
+        "online": lin.is_online_source(source),
+        "local_parents": [p["id"] for p in parents if not lin.is_online_source(p.get("source"))],
     }
+
+
+ONLINE_HOW_EXPORT = [
+    "create a private repository for this wiki on your git host "
+    "(with the GitHub CLI: gh repo create <org>/<name> --private)",
+    "git remote add origin <its url>   (or: git remote set-url origin <its url>)",
+    "git push -u origin HEAD",
+    "run the export again",
+]
+
+
+def _online_problems(me: dict) -> list:
+    """Why this layer has no online source of truth (empty list: it has one)."""
+    problems = []
+    if me["source"] is None:
+        problems.append("this repository has no 'origin' remote")
+    elif not me["online"]:
+        problems.append(f"its source {me['source']} is a path on this machine")
+    if me["local_parents"]:
+        problems.append(f"parent layer(s) {', '.join(me['local_parents'])} point at a local path")
+    return problems
+
+
+def _require_online(me: dict, allow_local: bool) -> None:
+    """Refuse to write a persona that teammates on other machines could not reach."""
+    if me["source"] is None:
+        raise PersonaError(
+            "no online source of truth: this repository has no 'origin' remote. Create a private "
+            "repository, add it as origin, push, and export again",
+            needs="online-source", layer=me["id"], how=ONLINE_HOW_EXPORT)
+    problems = _online_problems(me)
+    if problems and not allow_local:
+        raise PersonaError(
+            "no online source of truth: " + "; ".join(problems) + ". A persona must pin a repository "
+            "teammates can reach; create a private one, push this wiki to it, and export again "
+            "(--allow-local-source is for tests and air-gapped setups)",
+            needs="online-source", layer=me["id"], how=ONLINE_HOW_EXPORT)
 
 
 def cmd_export_propose(args) -> dict:
@@ -486,7 +532,8 @@ def cmd_export_propose(args) -> dict:
     existing = []
     if personas_dir(target).is_dir():
         existing = sorted(p.stem for p in personas_dir(target).glob("*.json") if p.name != PERSONAS_INDEX_FILE)
-    return {
+    problems = _online_problems(me)
+    out = {
         "role": args.role,
         "persona_id": f"{me['id']}/{args.role}",
         "layer": {k: me[k] for k in ("id", "role", "source", "path", "pin", "tree_sha")},
@@ -495,6 +542,7 @@ def cmd_export_propose(args) -> dict:
             "git_clean": me["clean"],
             "lint_errors": lint_result["summary"]["errors"],
             "lint_warnings": lint_result["summary"]["warnings"],
+            "online_source": not problems,
         },
         "candidates": {
             "patterns": [s for s, i in pages.items() if i["type"] == "patterns"],
@@ -517,6 +565,13 @@ def cmd_export_propose(args) -> dict:
         "next": "write a spec JSON and run: persona.py export write --role "
                 f"{args.role} --spec <file>",
     }
+    if problems:
+        out["needs"] = "online-source"
+        out["online_problems"] = problems
+        out["how"] = ONLINE_HOW_EXPORT
+        out["next"] = ("first give this wiki an online source of truth (ask the owner to create a private "
+                       "repository and push to it), then write the spec and export")
+    return out
 
 
 def _resolve_reads_first(refs: list, me_layers: list) -> list:
@@ -562,6 +617,7 @@ def cmd_export_write(args) -> dict:
     if not lin.SLUG_RE.match(args.role or ""):
         raise PersonaError("--role must be kebab-case, e.g. backend-engineer")
     me = _self_layer(target, args)
+    _require_online(me, getattr(args, "allow_local_source", False))
     if not me["clean"] and not args.allow_dirty:
         raise PersonaError(
             f"{me['path']} has uncommitted changes; commit first so the pin is reproducible "
@@ -672,6 +728,23 @@ def _plan_warnings(manifest: dict, existing: Optional[dict], mirror: Optional[di
     return warnings
 
 
+def _import_blockers(manifest: dict, allow_local: bool) -> list:
+    """An adopter links only to online sources of truth (unless they opt out)."""
+    local = [l.get("id") for l in manifest.get("layers", []) if not lin.is_online_source(l.get("source"))]
+    if not local or allow_local:
+        return []
+    owner = (manifest.get("provenance") or {}).get("exported_by")
+    if not owner or owner == "unknown":
+        owner = "the persona's owner"
+    return [{
+        "needs": "online-source", "layers": local, "owner": owner,
+        "message": (f"{', '.join(local)} point at a path on the exporter's machine, not an online "
+                    f"repository, so this project could not stay linked to the source of truth. Ask "
+                    f"{owner} to publish it to a private repository (/compathy-publish, or "
+                    f"/compathy-persona export from a repo with an online origin), then import from there"),
+    }]
+
+
 def cmd_import(args) -> dict:
     target = Path(args.target).resolve()
     org = _org_ref(args, target)
@@ -711,14 +784,21 @@ def cmd_import(args) -> dict:
         "reads_first": manifest.get("reads_first") or [],
         "mirror": res.get("mirror"),
         "watch": {"hook": _watch_command(), "file": str(target.joinpath(*CLAUDE_LOCAL_SETTINGS)),
-                  "checks": "once a day at session start: has a parent layer published since its pin?"},
+                  "checks": "at session start, at most every six hours: has a parent layer published since its pin?"},
         "warnings": _plan_warnings(manifest, existing, res.get("mirror")),
         "consent_kinds": list(CONSENT_KINDS),
+        "blockers": _import_blockers(manifest, getattr(args, "allow_local_source", False)),
     }
+    plan["ok"] = not plan["blockers"]
     if not args.apply:
-        plan["next"] = ("ask the user per category, then run again with --apply "
+        plan["next"] = (plan["blockers"][0]["message"] if plan["blockers"] else
+                        "ask the user per category, then run again with --apply "
                         "--consent fetch,link,toolkit,watch (any subset)")
         return plan
+    if plan["blockers"]:
+        b = plan["blockers"][0]
+        raise PersonaError("import blocked: " + b["message"], needs=b["needs"], layers=b["layers"],
+                           owner=b["owner"])
 
     consent = {c.strip() for c in (args.consent or "").split(",") if c.strip()}
     bad = consent - set(CONSENT_KINDS)
@@ -834,6 +914,7 @@ def _link(target: Path, manifest: dict, res: dict, trust: int, args) -> list:
         written.append(str(page))
     discovery.write_discovery_breadcrumbs(target, project_name)
     written.append(str(target / discovery.CLAUDE_MD))
+    written.append(str(target / discovery.AGENTS_MD))
     home_copy = personas_home_dir() / f"{layer_slug(manifest['id'])}.json"
     lin.write_json_atomic(home_copy, {**manifest, "_imported": {"at": doc["imported_at"], "target": str(target),
                                                                   "origin": res["origin"], "trust": trust}})
@@ -1341,7 +1422,7 @@ def cmd_freshness(args) -> dict:
         fresh = bool(ent) and args.ttl is not None and now - int(ent.get("checked_at", 0)) < args.ttl
         if not fresh:
             prev = ent or {}
-            head = layers_mod.upstream_head(layer["source"])
+            head = layers_mod.upstream_head(layer["source"], timeout=10)
             ent = {"head": head, "checked_at": now}
             if head and head != layer["pin"]:
                 if prev.get("head") == head and prev.get("tree_sha"):
@@ -1349,7 +1430,8 @@ def cmd_freshness(args) -> dict:
                 else:
                     try:
                         ent.update({k: v for k, v in layers_mod.probe_upstream(
-                            layer["source"], layer.get("path") or "context").items() if k != "head"})
+                            layer["source"], layer.get("path") or "context", timeout=15).items()
+                            if k != "head"})
                     except layers_mod.LayerFetchError:
                         pass
             cache[key] = ent
@@ -1596,6 +1678,8 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--exported-by", default=None)
             p.add_argument("--allow-dirty", action="store_true")
             p.add_argument("--allow-lint-errors", action="store_true")
+        p.add_argument("--allow-local-source", action="store_true",
+                       help="allow a local git+file:// source (tests and air-gapped setups only)")
 
     im = sub.add_parser("import", help="plan or apply an import (file | https url | org/team/role | "
                                        "layer source or .bundle path with #role)")
@@ -1609,6 +1693,8 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--self-id", default=None, help="this layer's id when --as team (e.g. acme/payments)")
     im.add_argument("--project-name", default=None)
     im.add_argument("--force", action="store_true", help="re-fetch cached layers / re-link same pins")
+    im.add_argument("--allow-local-source", action="store_true",
+                    help="adopt a persona whose layers are local git+file:// paths (tests, air-gapped)")
 
     se = sub.add_parser("search", help="find team personas via the org registry")
     _tgt(se)
@@ -1716,7 +1802,7 @@ def main(argv=None) -> int:
         else:  # pragma: no cover
             raise PersonaError(f"unknown command {args.cmd}")
     except (PersonaError, lin.LineageError) as e:
-        _emit({"error": str(e), "command": args.cmd})
+        _emit({"error": str(e), "command": args.cmd, **getattr(e, "extra", {})})
         return 1
     _emit(out)
     if args.cmd == "sync" and not out.get("ok", True):

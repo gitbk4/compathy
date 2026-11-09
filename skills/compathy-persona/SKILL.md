@@ -69,6 +69,15 @@ python3 $P export propose --target . --role <role> [--layer-id acme/payments] [-
 - If `preconditions.git_clean` is false or `lint_errors > 0`, stop and
   tell the user exactly what to commit or fix. Do not pass
   `--allow-dirty` / `--allow-lint-errors` unless the user insists.
+- If `needs` is `online-source`, this wiki has no online source of truth:
+  no `origin`, or one that is a path on this machine. A persona must pin a
+  repository teammates can reach, so tell the owner and ask whether to
+  create a private one now. With their yes and the `gh` CLI:
+  `gh repo create <org>/<name> --private --source . --remote origin --push`.
+  Otherwise they create it in their git host, then `git remote add origin
+  <url>` and `git push -u origin HEAD`. Run `export propose` again. Pass
+  `--allow-local-source` only when the owner says this is a test or an
+  air-gapped setup.
 
 ### E2. Interview (one question at a time)
 
@@ -166,7 +175,14 @@ Show the user, compactly:
 - if `mirror` is set (an import from a bundle): the layer is read from the
   bundle on this machine, while `lineage.json` keeps the layer's canonical
   source, so the file stays the same for every teammate. Pins and tree
-  hashes are verified either way.
+  hashes are verified either way, and later reads try the online
+  repository first, falling back to the bundle.
+- if `blockers` is not empty (`needs: online-source`): stop. The persona
+  points at a path on its exporter's machine, so this project could not
+  stay linked to the source of truth. Tell the user to ask `owner` to
+  publish it to a private repository, then import from there.
+  `--allow-local-source` is only for tests and air-gapped setups the user
+  confirms.
 
 ### I2. Consent, four separate yes/no questions
 
@@ -174,8 +190,8 @@ Ask in this order, one at a time, with your harness's interactive prompt:
 
 1. **fetch** the layers into `~/.compathy/layers/` (read-only cache)?
 2. **link** this project (write `context/lineage.json`, `context/persona.json`,
-   an `entities/persona-<role>.md` page, the CLAUDE.md/README "Federation"
-   block)?
+   an `entities/persona-<role>.md` page, the "Federation" block in CLAUDE.md,
+   AGENTS.md and README)?
 3. **toolkit**: register the listed MCP servers in `.mcp.json` and print the
    skill install commands?
 4. **watch** (Claude Code): add a SessionStart hook to
@@ -215,7 +231,7 @@ End with:
 ```
 compathy-persona: joined <persona id> [trust N]
   layers:   <org>@<pin> -> <team>@<pin> -> this project
-  linked:   context/lineage.json, context/persona.json, CLAUDE.md
+  linked:   context/lineage.json, context/persona.json, CLAUDE.md, AGENTS.md
   toolkit:  <N mcp servers registered, M skill commands printed>
   next:     run /compathy to compile this project against its lineage
 ```

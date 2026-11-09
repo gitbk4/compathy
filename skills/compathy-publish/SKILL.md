@@ -27,6 +27,7 @@ and `Q="{skill_dir}/../../scripts/persona.py"`.
 | `plan [--diff] [--note T]` | build in a temp dir: pages, unlinked links, private sections, scan, lint, diff |
 | `apply --note T` | write the core repo and commit content, then personas pinned to it |
 | `push [--confirm-private]` | push to the remote (refused if it is public) and refresh the bundle |
+| `remote <url> [--confirm-private]` | set the core's online source of truth (config and origin; refuses a public repo) |
 | `status` | what is marked, the core repo's HEAD, the last publish, the bundle's state |
 
 Every call prints JSON. Exit 1 means `error` holds a message for the owner.
@@ -53,10 +54,14 @@ Ask one question at a time; propose answers from the wiki.
 2. **Audience.** `org` (everyone in the company) unless the owner says
    `team`. Pages publish when their visibility reaches the audience:
    private < team < org < public.
-3. **Core repo.** A local folder outside this project (for example
-   `~/Code/<area>-core`) and a **private** remote in the company's git host.
-   If the owner has the `gh` CLI and agrees, create the remote with
-   `gh repo create <org>/<name> --private`; never create a public one.
+3. **Core repo and its online source of truth.** A local folder outside
+   this project (for example `~/Code/<area>-core`) and a **private** remote
+   in the company's git host. The remote is required: personas pin it and
+   teammates' `lineage.json` records it, so a bundle alone is not enough.
+   If the owner has none, ask whether to create one now; with their yes and
+   the `gh` CLI, `gh repo create <org>/<name> --private`. Never create a
+   public one. `allow_local_source` in `publish.json` is only for tests and
+   air-gapped setups the owner names.
 4. **Bundle (optional).** For readers without access to the git host: a
    `.bundle` path inside a synced folder limited to the company, such as a
    Google shared drive mounted by Drive for desktop
@@ -68,6 +73,13 @@ Ask one question at a time; propose answers from the wiki.
 python3 $P init --target . --layer-id <id> --title "<title>" --repo <path> \
   [--remote git+https://github.com/<org>/<name>.git] [--bundle "<path>.bundle"] \
   --owner-name "<name>" --owner-email <email> [--owner-github <handle>] --email-domain <domain>
+```
+
+If the result says `needs: online-source`, create the repository as in
+step 3 and set it (the command refuses a public repository):
+
+```bash
+python3 $P remote <url> --target .
 ```
 
 Then add two things to `context/publish.json` with the owner:
@@ -126,6 +138,9 @@ Render, compactly:
 - lint errors in the built layer, and `blockers`
 - the diff file path (`context/compathy-reports/publish-<date>.diff`);
   summarize the changed pages from it in a few lines
+
+A `no online source of truth` blocker means the core has no private remote
+yet: offer to create one and run `remote <url>` as in Init.
 
 Fixing findings, in order of preference: edit the source page, wrap the
 passage in a private section, or unmark the page. An allow entry

@@ -1,8 +1,11 @@
 # Architecture
 
-Compathy works in **Claude Code** and **Google Antigravity** — a single
-SKILL.md package drives both, since the skill formats align on YAML
-frontmatter (`name` + `description`). Only the install path differs.
+Compathy runs in any agent that loads SKILL.md packages and is tested in
+**Claude Code** and **Google Antigravity**. One package drives every agent,
+since the skill formats align on YAML frontmatter (`name` + `description`);
+only the install path differs (`install.py --dir` covers other agents). The
+wiki is plain markdown, and the `compathy-wiki` MCP server works with any MCP
+client. Below, "the agent" is whatever LLM-driven tool runs the skill.
 
 ## The concept (Karpathy, April 2026)
 
@@ -27,7 +30,7 @@ to relevant pages. Synthesis is pre-computed and compounds.
 | `wiki/` — compiled artifact | LLM | LLM-owned (humans may edit; LLM reconciles) |
 | `schema.md` — conventions | Co-evolved | Human + LLM update together |
 
-## Split of concerns: Python vs Claude
+## Split of concerns: Python vs the agent
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -40,7 +43,7 @@ to relevant pages. Synthesis is pre-computed and compounds.
                        │ JSON outputs consumed by...
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  CLAUDE (synthesis + writing)                               │
+│  AGENT (synthesis + writing)                                │
 │  ├── interviews the user                                    │
 │  ├── reads raw sources                                      │
 │  ├── writes summaries, concepts, entities                   │
@@ -57,14 +60,14 @@ to relevant pages. Synthesis is pre-computed and compounds.
 ```
   [1] INGEST           [2] COMPILE          [3] LINT            [4] HEAL
   ─────────            ──────────           ────────            ────────
-  User drops raw       Claude reads         lint.py validates:  Claude re-reads
+  User drops raw       Agent reads          lint.py validates:  Agent re-reads
   sources / adds       raw + bootstrap      • backlinks resolve related_paths,
   .ref files           emits compile        • no orphans        updates stale
        │               hints                • schema compliance pages, bumps
        │                   │                • staleness         updated: in
        ▼                   ▼                    │               frontmatter
-  ingest.py           Claude writes              ▼
-  detects changes     wiki pages with        Claude fixes
+  ingest.py           Agent writes               ▼
+  detects changes     wiki pages with        Agent fixes
   via checksums       [[backlinks]],         errors (re-reads,
   (LF-normalized)     updates index.md,      re-writes)
        │              appends log.md             │
@@ -82,7 +85,7 @@ to relevant pages. Synthesis is pre-computed and compounds.
  user: /compathy
     │
     ▼
- Claude reads SKILL.md
+ Agent reads SKILL.md
     │
     ├─▶ python ingest.py --detect-changes
     │         │
@@ -92,9 +95,9 @@ to relevant pages. Synthesis is pre-computed and compounds.
     │         ├── compares vs .compile-state.json
     │         └── emits {added, modified, deleted, errors}
     │
-    ├─▶ Claude reads changed raw + related wiki pages
-    ├─▶ Claude writes/updates wiki pages
-    ├─▶ Claude updates index.md + log.md
+    ├─▶ Agent reads changed raw + related wiki pages
+    ├─▶ Agent writes/updates wiki pages
+    ├─▶ Agent updates index.md + log.md
     │
     ├─▶ python ingest.py --commit-state  (atomic tmp+rename)
     │
@@ -104,7 +107,7 @@ to relevant pages. Synthesis is pre-computed and compounds.
               ├── check_backlinks / check_orphans
               ├── check_schema_compliance
               └── check_staleness (batched git log)
-         Claude fixes errors, reports summary
+         Agent fixes errors, reports summary
 ```
 
 ## Key design decisions
@@ -153,7 +156,7 @@ calls regardless of page count.
 ### 7. Index is authoritative
 
 The linter enforces bijection: every page file ↔ every index entry. This gives
-Claude a single source of truth during compile ("if it's not in the index,
+the agent a single source of truth during compile ("if it's not in the index,
 I forgot to add it") and prevents the index from silently drifting.
 
 ### 8. Append-only log
@@ -335,6 +338,13 @@ Principles:
 6. **Provenance survives layering.** Every resolved page carries `layer`;
    every persona carries `provenance`; every import is logged to
    `~/.compathy/import-log.jsonl` and to the wiki `log.md`.
+7. **One online source of truth (v0.4.1).** Personas pin only `git+https`
+   or `git+ssh` sources. `export` and `publish` stop with
+   `needs: online-source` and the skills ask the owner to create a private
+   repository; `import` refuses a persona whose layers are local paths and
+   names the owner to ask. Reads try the online source before a mirror.
+   `--allow-local-source` is the explicit opt-out for tests and air-gapped
+   setups.
 
 | Actor | Org layer | Team layer | Project | Personas | Registry |
 |---|---|---|---|---|---|

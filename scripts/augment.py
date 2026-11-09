@@ -3,7 +3,7 @@
 
 Reads the target project's compathy wiki (or falls back to bootstrap scan).
 Emits JSON with the target's pages, tech stack, and file structure for
-Claude to characterize strengths and offer augmentation candidates.
+the agent to characterize strengths and offer augmentation candidates.
 
 Current project MUST have a compathy wiki. Target is read-only.
 """

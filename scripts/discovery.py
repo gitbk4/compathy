@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Auto-write a "Project context" section into the project's CLAUDE.md and
-README.md so Claude Code (and other AI agents) discover the wiki without
-having to be told.
+"""Auto-write a "Project context" section into the project's CLAUDE.md,
+AGENTS.md and README.md so coding agents discover the wiki without having
+to be told: Claude Code reads CLAUDE.md, many other agents read AGENTS.md,
+and README.md serves people and anything else.
 
 The section is fenced by a sentinel pair (HTML comments) so re-running the
 scaffold against an existing project is idempotent: existing content above
@@ -41,17 +42,18 @@ from paths import (  # noqa: E402
 )
 
 CLAUDE_MD = "CLAUDE.md"
+AGENTS_MD = "AGENTS.md"
 README_MD = "README.md"
 MCP_JSON = ".mcp.json"
 SENTINEL_START = "<!-- compathy:context-section START -->"
 SENTINEL_END = "<!-- compathy:context-section END -->"
 
-# Install path for the MCP server. Matches install.py's TOOL_BASES for the
-# global Claude install. compathy_query.py's module docstring documents the
-# same path.
-COMPATHY_QUERY_PATH = (
-    Path.home() / ".claude" / "skills" / "compathy" / "scripts" / "compathy_query.py"
-)
+# The MCP server and the persona CLI are the scripts next to this file, so
+# the paths written into a project work for any install (Claude Code,
+# Antigravity, `install.py --dir`, or a plain clone).
+SCRIPTS_DIR = Path(__file__).resolve().parent
+COMPATHY_QUERY_PATH = SCRIPTS_DIR / "compathy_query.py"
+PERSONA_SCRIPT_PATH = SCRIPTS_DIR / "persona.py"
 COMPATHY_MCP_SERVER_KEY = "compathy-wiki"
 
 # Files we are willing to upsert into. Other extensions (or extensionless
@@ -158,6 +160,10 @@ def _render_federation_block(lineage: dict, persona: Optional[dict]) -> list:
     out.append("page, check whether a parent already has it and link instead of duplicating.")
     out.append("Propose parent changes upstream via PR; `/compathy-persona status` shows pin")
     out.append("freshness and `/compathy-persona sync` restores missing caches.")
+    out.append("")
+    out.append("At the start of a session, check whether a parent was republished since its")
+    out.append(f"pin: `python3 {_tilde(PERSONA_SCRIPT_PATH)} freshness --target . --format line`.")
+    out.append("If it prints a line, tell the user and offer `/compathy-persona update`.")
     return out
 
 
@@ -307,9 +313,9 @@ def upsert_mcp_json(target: Path) -> str:
 
 
 def write_discovery_breadcrumbs(target: Path, project_name: str) -> Dict[str, str]:
-    """Write CLAUDE.md, README.md, and .mcp.json breadcrumbs at project root.
+    """Write CLAUDE.md, AGENTS.md, README.md, and .mcp.json breadcrumbs at project root.
 
-    Returns a dict with keys 'claude_md', 'readme_md', and 'mcp_json'. Markdown
+    Returns a dict with keys 'claude_md', 'agents_md', 'readme_md', and 'mcp_json'. Markdown
     statuses are 'created' | 'replaced' | 'appended' | 'skipped'. The
     ``mcp_json`` status is 'created' | 'added' | 'replaced' |
     'skipped-malformed' | 'error'.
@@ -323,15 +329,16 @@ def write_discovery_breadcrumbs(target: Path, project_name: str) -> Dict[str, st
     section_body = render_context_section(project_name, lineage, persona)
     result: Dict[str, str] = {
         "claude_md": "skipped",
+        "agents_md": "skipped",
         "readme_md": "skipped",
         "mcp_json": "skipped",
     }
 
-    for key, name in (("claude_md", CLAUDE_MD), ("readme_md", README_MD)):
+    for key, name in (("claude_md", CLAUDE_MD), ("agents_md", AGENTS_MD), ("readme_md", README_MD)):
         path = target / name
         # Both filenames end in .md, but if the file already exists with a
         # weird suffix because someone symlinked it, _markdown_ok returns
-        # False and we skip. For the canonical names CLAUDE.md / README.md,
+        # False and we skip. For the canonical names CLAUDE.md / AGENTS.md / README.md,
         # this always passes.
         if not _markdown_ok(path):
             result[key] = "skipped"
@@ -361,7 +368,7 @@ def _markdown_ok(path: Path) -> bool:
     """Return True if ``path`` looks safe to upsert markdown into.
 
     We accept anything with a markdown-ish suffix. The canonical names
-    CLAUDE.md and README.md always pass.
+    CLAUDE.md, AGENTS.md and README.md always pass.
     """
     suffix = path.suffix.lower()
     return suffix in _MARKDOWN_SUFFIXES

@@ -18,7 +18,8 @@ and compiles a structured markdown wiki at `context/` with:
 The wiki compounds. Every future agent session reads the index first and
 jumps to relevant pages — no re-grounding, no re-reading the whole codebase.
 
-Works with **Claude Code** and **Google Antigravity** (same SKILL.md, same scripts).
+Works with any agent that loads SKILL.md skills, such as **Claude Code** and
+**Google Antigravity** (same SKILL.md, same scripts).
 
 Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 (April 2026).
@@ -36,7 +37,8 @@ Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/4
 ## Install
 
 Clone once, then use the installer. By default it installs **all five
-skills**. Pick `--claude` or `--antigravity` for your IDE.
+skills**. Pick `--claude` or `--antigravity`, or `--dir <skills folder>` for
+any other agent.
 
 ```bash
 git clone https://github.com/gitbk4/compathy.git ~/Code/compathy
@@ -61,6 +63,18 @@ python3 scripts/install.py --antigravity --workspace  # all skills, project-loca
 Compathy installs into Antigravity's **Skills** slot (not Rules, not Workflows).
 Its description field acts as the trigger phrase — Antigravity loads the skill
 only when relevant, keeping your agent context clean.
+
+### Any other agent
+
+Point `--dir` at the folder your agent loads skills from:
+
+```bash
+python3 scripts/install.py --dir <your agent's skills folder>
+```
+
+The wiki is plain markdown and the `compathy-wiki` MCP server works with any
+MCP client. `/compathy` writes the project context into `CLAUDE.md`,
+`AGENTS.md` and `README.md`, so agents that read any of them find the wiki.
 
 ### Update or uninstall
 
@@ -207,7 +221,7 @@ tree hash of their `wiki/`, and cached read-only under `~/.compathy/layers/`
 What linking writes: `context/lineage.json` (parents + pins + this layer's
 role), `context/persona.json` (the manifest, verbatim), a
 `entities/persona-<role>.md` page, and a "Federation" block in the
-CLAUDE.md/README context section. The `compathy-wiki` MCP server reads
+CLAUDE.md, AGENTS.md and README context section. The `compathy-wiki` MCP server reads
 `lineage.json` itself, so every tool answers across layers
 (`compathy_get_page` returns `layer` and `also_in`).
 
@@ -264,10 +278,12 @@ their own pages.
   Findings name the rule, file, line and a fingerprint, never the match.
 - **Private remotes only.** `push` refuses a repository that answers an
   anonymous `ls-remote`.
-- **One source of truth.** Teammates pin a commit and verify its tree hash,
-  as with any layer. A bundle in a shared drive is a mirror of the same
-  repository: same pins, same checks, and `lineage.json` stays identical
-  for everyone.
+- **One online source of truth.** Personas pin a private https or ssh
+  repository. Export and publish stop and ask the owner to create one when
+  it is missing, and import refuses a persona that points at a local path.
+  Teammates pin a commit and verify its tree hash. A bundle in a shared
+  drive is a mirror of the same repository (same pins, same checks,
+  identical `lineage.json`), read only when the repository is out of reach.
 - **Staying current.** `/compathy-persona freshness` (and an optional
   session-start hook) tells a teammate when you have published since their
   pin; `update` lists what changed and which of their pages to revise.
@@ -302,16 +318,18 @@ is never lost across compiles.
 ## Design philosophy
 
 - **Python = bookkeeping.** Deterministic file I/O, checksums, graph validation.
-- **Claude = synthesis.** Reading, writing, backlinks, healing.
+- **The agent = synthesis.** Reading, writing, backlinks, healing. Any LLM
+  agent that loads SKILL.md skills can play this part.
 - **Stdlib only.** No dependencies. Works with Python 3.10+.
 - **Git-versioned.** The wiki is text. Diff it. Review it in PRs.
-- **Human-editable.** Claude reconciles manual edits rather than clobbering.
+- **Human-editable.** The agent reconciles manual edits rather than clobbering.
 
 ## Requirements
 
 - Python 3.10+
 - Git (optional, but unlocks history-bootstrap and staleness detection)
-- An agentic IDE that loads SKILL.md packages (Claude Code, Antigravity)
+- An agent that loads SKILL.md packages (Claude Code, Antigravity, or any other
+  via `install.py --dir`)
 
 ## License
 

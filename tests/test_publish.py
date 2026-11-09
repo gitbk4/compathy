@@ -128,6 +128,7 @@ class Env(unittest.TestCase):
         cfg["personas"] = {"marketing": {"title": "Pricing marketing", "summary": "Messaging for pricing.",
                                          "tags": ["marketing"], "reads_first": ["pricing"],
                                          "responsibilities": ["campaign copy"]}}
+        cfg["allow_local_source"] = True  # the fixtures' "remote" is a local bare repo
         cfg.update(extra)
         lin.write_json_atomic(publish.config_path(owner), cfg)
         return cfg
@@ -438,7 +439,7 @@ class TestTeammate(Env):
         r = run(persona, ["import", f"{bundle}#marketing", "--target", str(jane)])
         self.assertEqual(r["source_kind"], "source")
         self.assertEqual(r["mirror"]["canonical"], "git+file://" + str(self.bare))
-        r = run(persona, ["import", f"{bundle}#marketing", "--target", str(jane), "--apply",
+        r = run(persona, ["import", f"{bundle}#marketing", "--target", str(jane), "--apply", "--allow-local-source",
                           "--consent", "fetch,link,watch", "--project-name", "jane"])
         self.assertEqual(r["_exit"], 0, r)
         self.assertEqual(r["trust"], 3)
@@ -460,7 +461,7 @@ class TestTeammate(Env):
     def test_freshness_and_update_report(self):
         owner = self.publish_core()
         jane = self.teammate()
-        r = run(persona, ["import", f"git+file://{self.bare}#marketing", "--target", str(jane), "--apply",
+        r = run(persona, ["import", f"git+file://{self.bare}#marketing", "--target", str(jane), "--apply", "--allow-local-source",
                           "--consent", "fetch,link", "--project-name", "jane"])
         self.assertEqual(r["_exit"], 0, r)
         page(paths.wiki_dir(jane) / "concepts" / "campaign.md", "Campaign", "Lead with [[pricing]] and [[tiers]].")
@@ -508,7 +509,7 @@ class TestTeammate(Env):
     def test_readme_only_commit_is_not_news(self):
         owner = self.publish_core()
         jane = self.teammate()
-        run(persona, ["import", f"git+file://{self.bare}#marketing", "--target", str(jane), "--apply",
+        run(persona, ["import", f"git+file://{self.bare}#marketing", "--target", str(jane), "--apply", "--allow-local-source",
                       "--consent", "fetch,link", "--project-name", "jane"])
         cfg = publish.load_config(owner)
         cfg["owner"]["email"] = "pricing-owner@acme.com"  # README and personas change, pages do not
@@ -520,6 +521,109 @@ class TestTeammate(Env):
         self.assertEqual(f["layers"][0]["state"], "current")
         u = run(persona, ["update", "--target", str(jane)])
         self.assertEqual(u["changes"][0]["status"], "same-content")
+
+
+
+# ---------- online source of truth ----------
+
+class TestOnlineSource(Env):
+    """Personas pin online sources; owners are told to create one; adopters are guarded."""
+
+    def git_wiki(self, name="team") -> Path:
+        t = self.root / name
+        t.mkdir()
+        git(t, "init", "-q", "-b", "main")
+        scaffold.create_structure(t, name)
+        git(t, "add", "-A")
+        git(t, "commit", "-qm", "wiki")
+        return t
+
+    def test_is_online_source(self):
+        self.assertTrue(lin.is_online_source("git+https://github.com/acme/core.git"))
+        self.assertTrue(lin.is_online_source("git+ssh://git@github.com/acme/core.git"))
+        self.assertFalse(lin.is_online_source("git+file:///tmp/core.git"))
+        self.assertFalse(lin.is_online_source(None))
+
+    def test_export_prompts_owner_for_an_online_source(self):
+        t = self.git_wiki()
+        base = ["export", "write", "--target", str(t), "--role", "analyst", "--layer-id", "acme/team",
+                "--title", "Analyst", "--exported-by", "lead@acme.com"]
+        r = run(persona, base)  # no origin at all
+        self.assertEqual((r["_exit"], r["needs"]), (1, "online-source"))
+        self.assertIn("gh repo create", " ".join(r["how"]))
+        r = run(persona, base + ["--source", "git+file://" + str(t)])  # a local path
+        self.assertEqual(r["needs"], "online-source")
+        r = run(persona, ["export", "propose", "--target", str(t), "--role", "analyst", "--layer-id", "acme/team"])
+        self.assertFalse(r["preconditions"]["online_source"])
+        self.assertEqual(r["needs"], "online-source")
+        git(t, "remote", "add", "origin", "https://github.com/acme/team-wiki.git")
+        r = run(persona, base)
+        self.assertEqual(r["_exit"], 0, r)
+        self.assertEqual(r["persona"]["layers"][0]["source"], "git+https://github.com/acme/team-wiki.git")
+
+    def test_import_refuses_a_persona_without_an_online_source(self):
+        t = self.git_wiki()
+        r = run(persona, ["export", "write", "--target", str(t), "--role", "analyst", "--layer-id", "acme/team",
+                          "--title", "Analyst", "--exported-by", "lead@acme.com",
+                          "--source", "git+file://" + str(t), "--allow-local-source"])
+        self.assertEqual(r["_exit"], 0, r)
+        member = self.root / "member"
+        member.mkdir()
+        plan = run(persona, ["import", r["written"], "--target", str(member)])
+        self.assertFalse(plan["ok"])
+        self.assertEqual(plan["blockers"][0]["layers"], ["acme/team"])
+        self.assertIn("Ask lead@acme.com", plan["next"])
+        r2 = run(persona, ["import", r["written"], "--target", str(member), "--apply", "--consent", "fetch,link"])
+        self.assertEqual((r2["_exit"], r2["needs"], r2["owner"]), (1, "online-source", "lead@acme.com"))
+        self.assertFalse(paths.lineage_path(member).exists())
+        r3 = run(persona, ["import", r["written"], "--target", str(member), "--apply", "--consent", "fetch,link",
+                           "--allow-local-source"])
+        self.assertEqual(r3["_exit"], 0, r3)
+
+    def test_publish_needs_an_online_remote(self):
+        owner = self.owner()
+        r = run(publish, ["init", "--target", str(owner), "--layer-id", "acme/pricing",
+                          "--repo", str(self.root / "core"), "--owner-name", "Owner",
+                          "--owner-email", "owner@acme.com", "--email-domain", "acme.com"])
+        self.assertEqual((r["_exit"], r["needs"]), (0, "online-source"))
+        p = publish.plan(owner, publish.load_config(owner))
+        self.assertFalse(p["ok"])
+        self.assertIn(publish.NO_ONLINE_SOURCE, p["blockers"])
+        r = run(publish, ["remote", "git+file:///tmp/somewhere.git", "--target", str(owner)])
+        self.assertEqual((r["_exit"], r["needs"]), (1, "online-source"))
+        with mock.patch.object(publish, "anonymous_readable",
+                               return_value={"public": True, "reason": "answers without credentials"}):
+            self.assertIn("private repository", run(publish, ["remote", "https://github.com/acme/core.git",
+                                                              "--target", str(owner)])["error"])
+        with mock.patch.object(publish, "anonymous_readable",
+                               return_value={"public": None, "reason": "unknown host"}):
+            self.assertIn("--confirm-private",
+                          run(publish, ["remote", "git@git.acme.internal:acme/core.git",
+                                        "--target", str(owner)])["error"])
+        with mock.patch.object(publish, "anonymous_readable",
+                               return_value={"public": False, "reason": "remote requires credentials"}):
+            r = run(publish, ["remote", "git@github.com:acme/pricing-core.git", "--target", str(owner)])
+        self.assertEqual(r["_exit"], 0, r)
+        self.assertEqual(r["remote"], "git+ssh://git@github.com/acme/pricing-core.git")
+        self.assertEqual(git(self.root / "core", "remote", "get-url", "origin"), "ssh://git@github.com/acme/pricing-core.git")
+        p = publish.plan(owner, publish.load_config(owner))
+        self.assertNotIn(publish.NO_ONLINE_SOURCE, p["blockers"])
+
+    def test_online_source_first_mirror_as_fallback(self):
+        mirrors = {"git+https://h/a.git": "git+file:///x.bundle", "git+file:///o/core.git": "git+file:///x.bundle"}
+        with mock.patch.object(layers, "load_mirrors", return_value=mirrors):
+            self.assertEqual(layers.candidate_sources("git+https://h/a.git"),
+                             ["git+https://h/a.git", "git+file:///x.bundle"])
+            self.assertEqual(layers.candidate_sources("git+file:///o/core.git"),
+                             ["git+file:///x.bundle", "git+file:///o/core.git"])
+            self.assertEqual(layers.candidate_sources("git+https://other/b.git"), ["git+https://other/b.git"])
+        repo = self.git_wiki("src")
+        bundle = self.root / "core.bundle"
+        git(repo, "bundle", "create", str(bundle), "HEAD", "main")
+        canonical = "git+https://127.0.0.1:9/core.git"  # nothing listens there: unreachable at once
+        persona._save_mirror(canonical, "git+file://" + str(bundle))  # pylint: disable=protected-access
+        self.assertEqual(layers.upstream_head(canonical, timeout=10), git(repo, "rev-parse", "HEAD"))
+        self.assertEqual(layers.probe_upstream(canonical, timeout=20)["head"], git(repo, "rev-parse", "HEAD"))
 
 
 if __name__ == "__main__":

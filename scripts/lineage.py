@@ -61,6 +61,9 @@ MANIFEST_KIND = "compathy-persona"
 
 LAYER_ROLES = ("org", "team", "project")
 SOURCE_SCHEMES = ("git+https://", "git+ssh://", "git+file://")
+# Sources on a git host. Personas pin only these; a git+file:// source is a
+# path on one machine (tests, air-gapped setups, or a mirror such as a bundle).
+ONLINE_SCHEMES = ("git+https://", "git+ssh://")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 LAYER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*$")
@@ -108,6 +111,15 @@ def write_json_atomic(path: Path, data) -> None:
 def valid_source(source) -> bool:
     """True if ``source`` uses one of the allowed git schemes."""
     return _is_str(source) and source.startswith(SOURCE_SCHEMES)
+
+
+def is_online_source(source) -> bool:
+    """True when ``source`` lives on a git host (https or ssh), not a local path.
+
+    The online repository is a layer's source of truth: teammates on other
+    machines can reach it, and a bundle in a shared drive only mirrors it.
+    """
+    return valid_source(source) and source.startswith(ONLINE_SCHEMES)
 
 
 def valid_layer_path(p) -> bool:

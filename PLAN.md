@@ -76,7 +76,7 @@ lead@payments:   /compathy-export --role backend-engineer
 newhire:         /compathy-search "payments backend"
                  → 1. acme/payments/backend-engineer  [trust 4] …
                  /compathy-import acme/payments/backend-engineer
-                 → layers pinned + cached, project linked, CLAUDE.md
+                 → layers pinned + cached, project linked, CLAUDE.md/AGENTS.md
                    breadcrumb says "read acme index, then payments index,
                    then this project's"; MCP server answers across all three
 ```
@@ -111,7 +111,7 @@ bites: rename to `role` (`/compathy-role-export`). Decide in review.
 |---|---|---|
 | Flat-YAML frontmatter parse | `lint.parse_frontmatter` | compathy `scripts/lint.py` |
 | Wiki reading | `compare.read_wiki_pages`, `read_project_data` | compathy `scripts/compare.py` |
-| Idempotent breadcrumbs (CLAUDE.md / README / `.mcp.json`) | `discovery.upsert_section`, `upsert_mcp_json` | compathy `scripts/discovery.py` |
+| Idempotent breadcrumbs (CLAUDE.md / AGENTS.md / README / `.mcp.json`) | `discovery.upsert_section`, `upsert_mcp_json` | compathy `scripts/discovery.py` |
 | MCP wiki server | `compathy_query.py` (gets multi-layer support) | compathy |
 | Atomic tmp+rename writes | `ingest.save_state` pattern | compathy |
 | Path sandboxing (`..` rejection, repo-root check) | `ingest.resolve_ref_file` | compathy |
@@ -122,7 +122,7 @@ bites: rename to `role` (`/compathy-role-export`). Decide in review.
 | Adoption with provenance into `raw/` | `compathy-augment` | compathy |
 
 Unchanged invariants: stdlib only; Python = deterministic bookkeeping,
-Claude = synthesis; `raw/` immutable; index authoritative; append-only log;
+the agent = synthesis; `raw/` immutable; index authoritative; append-only log;
 soft-fail on anything non-load-bearing.
 
 ---
@@ -304,10 +304,10 @@ Run **inside a team (or org) compathy**. Produces a persona for one role.
 | Step | Who | What |
 |---|---|---|
 | 0 | Python | Validate: `context/wiki/` exists, lint clean (errors block export), git clean tree on `context/` (dirty → refuse; pins must be reproducible), resolve own `lineage.json` (a team persona always embeds its parent org layer). |
-| 1 | Claude | Interview: role title, one-line summary, tags. Propose `reads_first` by scanning `index.md` + `patterns/` (Claude picks 3–7 slugs, user confirms). Propose `responsibilities` from entity/concept pages mentioning the role. |
+| 1 | Agent | Interview: role title, one-line summary, tags. Propose `reads_first` by scanning `index.md` + `patterns/` (the agent picks 3–7 slugs, user confirms). Propose `responsibilities` from entity/concept pages mentioning the role. |
 | 2 | Python | `export_persona.py write --role … <<JSON` — validate slugs exist in the lineage, compute pins (`git rev-parse HEAD` per layer) and `index_sha256`, check every referenced layer's `visibility` ≥ persona's declared visibility (refuse to export a `team`-visibility layer in a `public` persona), atomic-write `context/personas/<role>.json`, regenerate `context/personas/index.json`, append `log.md` entry (`## [date] export | persona <id>`). |
 | 3 | Python (opt) | `--bundle` also writes `compathy-persona-<id>.tar.gz` = manifest + snapshot of each layer's `wiki/` at pin, for offline/air-gapped import. Bundles are never the source of truth; import prefers live pins and falls back to bundle contents with a `trust −1` badge. |
-| 4 | Claude | Print summary; remind: "commit `context/personas/` so search can find it". |
+| 4 | Agent | Print summary; remind: "commit `context/personas/` so search can find it". |
 
 Failure modes: not a compathy project → clear error; lint errors → list
 them and stop; dirty tree → stop with `git status` excerpt; slug not found →
@@ -322,11 +322,11 @@ scaffolds first via `scaffold.py --from-persona`).
 |---|---|---|
 | 0 | Python | Resolve argument: local file → read; `https://…json` → fetch (urllib); `org/team/role` id → search resolution (registry hops). Validate `kind`, `schema_version`, required fields. |
 | 1 | Python | **Verify**: if `signature` present, `ssh-keygen -Y verify` against the org layer's `context/allowed_signers` (fetched at the *org* pin, not from the persona — the persona can't vouch for itself). Compute trust score (below). Emit JSON: manifest + trust + what will change. |
-| 2 | Claude | Show the user: layers to fetch (source, pin, size), role summary, toolkit items, policy, trust badge, and any warnings (unsigned, pin older than 90 days, visibility mismatch). **Ask consent** in three separate yes/no's: (a) fetch layers, (b) link this project (write `lineage.json`, `.mcp.json`, CLAUDE.md), (c) install toolkit. Nothing happens on `--dry-run`. |
+| 2 | Agent | Show the user: layers to fetch (source, pin, size), role summary, toolkit items, policy, trust badge, and any warnings (unsigned, pin older than 90 days, visibility mismatch). **Ask consent** in three separate yes/no's: (a) fetch layers, (b) link this project (write `lineage.json`, `.mcp.json`, CLAUDE.md), (c) install toolkit. Nothing happens on `--dry-run`. |
 | 3 | Python | Fetch each layer into `~/.compathy/layers/<id>/<pin>/` (`git clone --depth 1` then `git fetch origin <pin>` + `checkout`, or `git worktree` if the repo is already cached). Verify `HEAD == pin` and `sha256(index.md) == index_sha256`; mismatch → abort, nothing linked. Clones are opened read-only by convention (`chmod -R a-w` on the cache dir; documented, not relied on for security). |
 | 4 | Python | Link: write `context/lineage.json`; update `.mcp.json` `compathy-wiki` args to `--target . --layer <path> --layer <path>` (reuses `upsert_mcp_json`, only touches our key); upsert the CLAUDE.md/README sentinel section with a role paragraph + layer reading order (extend `render_context_section`); append `log.md` entry; append `~/.compathy/import-log.jsonl`. |
 | 5 | Python (opt) | Toolkit: print install commands per item; **never auto-run** unless the user said yes in (c). Skills → `claude plugin install`/`git clone` lines; MCP → `.mcp.json` merge (our own upsert helper, one key at a time). |
-| 6 | Claude | Summary + next step: "run `/compathy` to compile this project against its lineage". |
+| 6 | Agent | Summary + next step: "run `/compathy` to compile this project against its lineage". |
 
 Idempotent: re-import of the same id + pins is a no-op with a "already
 linked at these pins" message. Re-import with newer pins is an **update** and
@@ -344,7 +344,7 @@ depth > 3 → error.
 | 0 | Python | Resolve org source: `--org` > `~/.compathy/config.json` > `lineage.json` of cwd (if already linked) > ask. `--local` skips network and lists only `~/.compathy/personas/` + layer cache. |
 | 1 | Python | Fetch org `registry.json` (cache 6h), then each team's `personas/index.json` (cache 6h). Both via `git archive --remote` where supported, else a shallow clone of the registry paths into `cache/`. Soft-fail per team: unreachable team → warning line, keep going. |
 | 2 | Python | Rank deterministically (no LLM, like `next-project`): token overlap of query vs `title+tags+summary` (+0.5), team name match (+0.2), persona `updated` within 90 days (+0.1), trust score normalized (+0.2). Emit JSON `{results:[{id, title, team, summary, trust, score, why}], warnings}`. |
-| 3 | Claude | Render a ranked list with trust badges and the `why` signals; offer "import #N". If the user has an ai-quickstart persona (`~/.ai-quickstart/persona/persona.json` read as plain JSON), mention role/industry overlap as a soft hint — never auto-pick. |
+| 3 | Agent | Render a ranked list with trust badges and the `why` signals; offer "import #N". If the user has an ai-quickstart persona (`~/.ai-quickstart/persona/persona.json` read as plain JSON), mention role/industry overlap as a soft hint — never auto-pick. |
 
 Also exposed to agents via new MCP tools in `compathy_query.py`:
 `compathy_layers()` (lineage + pins + cache status) and

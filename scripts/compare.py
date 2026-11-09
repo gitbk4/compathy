@@ -3,7 +3,7 @@
 
 Reads both projects' compathy wikis (or falls back to bootstrap scan for
 the target). Emits JSON with entity/concept/pattern overlap, unique sets,
-and tech stack signals for Claude to write the comparison report.
+and tech stack signals for the agent to write the comparison report.
 
 Current project MUST have a compathy wiki. Target project can fall back
 to bootstrap scan.

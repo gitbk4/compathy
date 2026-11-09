@@ -102,8 +102,8 @@ def create_structure(target: Path, project_name: str = "") -> None:
 
 
 def _maybe_write_discovery(target: Path, project_name: str) -> None:
-    """Auto-write a "Project context" section into CLAUDE.md and README.md
-    so Claude Code (and other agents) discover the wiki without prompting.
+    """Auto-write a "Project context" section into CLAUDE.md, AGENTS.md and
+    README.md so coding agents discover the wiki without prompting.
 
     Wrapped so a discovery failure NEVER aborts the scaffold (consistent
     with lane-1D's persona-integration posture). Appends a single log.md
@@ -129,7 +129,7 @@ def _append_discovery_log_entry(log_path: Path, result: dict) -> None:
     if not log_path.is_file():
         return
     parts = []
-    for fname, key in (("CLAUDE.md", "claude_md"), ("README.md", "readme_md")):
+    for fname, key in (("CLAUDE.md", "claude_md"), ("AGENTS.md", "agents_md"), ("README.md", "readme_md")):
         status = result.get(key, "skipped")
         if status != "skipped":
             parts.append(f"{fname} {status}")
@@ -209,9 +209,11 @@ def main() -> int:
     ap.add_argument(
         "--consent",
         default="fetch,link",
-        help="with --from-persona: comma list of fetch,link,toolkit (default fetch,link)",
+        help="with --from-persona: comma list of fetch,link,toolkit,watch (default fetch,link)",
     )
     ap.add_argument("--org", default=None, help="with --from-persona: org compathy source for id lookups")
+    ap.add_argument("--allow-local-source", action="store_true",
+                    help="with --from-persona: adopt layers at local git+file:// paths (tests, air-gapped)")
     args = ap.parse_args()
     target = Path(args.target).resolve()
 
@@ -229,6 +231,8 @@ def main() -> int:
             argv += ["--project-name", args.project_name]
         if args.org:
             argv += ["--org", args.org]
+        if args.allow_local_source:
+            argv += ["--allow-local-source"]
         return persona.main(argv)
 
     try:

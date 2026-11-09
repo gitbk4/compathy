@@ -13,6 +13,7 @@ which teammates link to as a pinned, read-only parent layer with
     plan   [--diff]                build in a temp dir; report pages, unlinks, scan, lint, diff
     apply  [--note TEXT]           write the build into the core repo; commit content, then personas
     push   [--confirm-private]     push to the remote (public-remote guard) and refresh the bundle
+    remote URL [--confirm-private] set the core's online source of truth (config and origin)
     status                         config, core repo HEAD, last publish, bundle freshness
 
 Every subcommand prints one JSON document; the SKILL.md renders it and asks
@@ -118,7 +119,15 @@ EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.
 
 
 class PublishError(Exception):
-    """User-facing failure; rendered as {"error": ...} with exit 1."""
+    """User-facing failure; rendered as {"error": ...} with exit 1.
+
+    Keyword arguments (for example ``needs="online-source"``) are added to
+    that JSON so the skill can act on them.
+    """
+
+    def __init__(self, message: str, **extra):
+        super().__init__(message)
+        self.extra = extra
 
 
 # ---------- small helpers ----------
@@ -221,6 +230,8 @@ def validate_config(cfg) -> list:
     elif remote is not None and re.match(r"^git\+https://[^/]*@", remote):
         probs.append("publish.json: remote must not embed credentials; let git's credential helper "
                      "sign in (the remote is copied into the README and the personas)")
+    if not isinstance(cfg.get("allow_local_source", False), bool):
+        probs.append("publish.json: allow_local_source must be true or false")
     bundle = cfg.get("bundle")
     if bundle is not None and (not isinstance(bundle, str) or not bundle.endswith(".bundle")):
         probs.append("publish.json: bundle must be a file path ending in .bundle")
@@ -289,6 +300,22 @@ def _core_paths(cfg: dict) -> dict:
     ctx = repo / rel
     return {"repo": repo, "rel": rel, "context": ctx, "wiki": ctx / WIKI_SUBDIR,
             "personas": ctx / PERSONAS_SUBDIR}
+
+
+ONLINE_HOW_PUBLISH = [
+    "create a private repository for the core on your git host "
+    "(with the GitHub CLI: gh repo create <org>/<name> --private)",
+    "publish.py remote <its url>",
+    "publish.py plan, then apply and push",
+]
+NO_ONLINE_SOURCE = ("no online source of truth: teammates would pin a path on this machine. Create a "
+                    "private repository and run `publish.py remote <url>` (allow_local_source in "
+                    "publish.json is for tests and air-gapped setups)")
+
+
+def has_online_source(cfg: dict) -> bool:
+    """True when personas will pin a repository teammates can reach (or the owner opted out)."""
+    return lin.is_online_source(cfg.get("remote")) or cfg.get("allow_local_source") is True
 
 
 def layer_source(cfg: dict) -> str:
@@ -949,6 +976,9 @@ def plan(target: Path, cfg: dict, note: Optional[str] = None, write_diff: bool =
     if not b["pages"]:
         blockers.append(f"no page has visibility {cfg.get('audience', DEFAULT_AUDIENCE)} or wider; "
                         "mark pages with `publish.py mark`")
+    needs_online = not has_online_source(cfg)
+    if needs_online:
+        blockers.append(NO_ONLINE_SOURCE)
     out = {
         "layer": cfg["layer"], "audience": cfg.get("audience", DEFAULT_AUDIENCE),
         "source": layer_source(cfg), "repo": str(b["paths"]["repo"]),
@@ -968,6 +998,9 @@ def plan(target: Path, cfg: dict, note: Optional[str] = None, write_diff: bool =
         "personas": sorted((cfg.get("personas") or {}).keys()),
         "blockers": blockers, "ok": not blockers,
     }
+    if needs_online:
+        out["needs"] = "online-source"
+        out["how"] = ONLINE_HOW_PUBLISH
     if write_diff:
         text = _diff_text(b)
         rd = reports_dir(target)
@@ -1349,9 +1382,61 @@ def init(target: Path, args) -> dict:
         raise PublishError(f"{repo} exists and is not a git repository")
     lin.write_json_atomic(cp, cfg)
     _append_log(target, "publish-init", f"core layer {args.layer_id}", [f"repo: {repo}"])
-    return {"written": str(cp), "config": cfg, "repo": str(repo), "repo_action": created or "existing",
-            "next": "add deny patterns and personas to publish.json, mark pages with "
-                    "`publish.py mark`, then run `publish.py plan`"}
+    out = {"written": str(cp), "config": cfg, "repo": str(repo), "repo_action": created or "existing",
+           "next": "add deny patterns and personas to publish.json, mark pages with "
+                   "`publish.py mark`, then run `publish.py plan`"}
+    if not has_online_source(cfg):
+        out["needs"] = "online-source"
+        out["how"] = ONLINE_HOW_PUBLISH
+        out["next"] = ("this core has no online source of truth yet: ask the owner to create a private "
+                       "repository, then run `publish.py remote <url>`; " + out["next"])
+    return out
+
+
+def set_remote(target: Path, cfg: dict, source: str, confirm_private: bool = False,
+               allow_local: bool = False) -> dict:
+    """Make ``source`` the core's online source of truth (config and origin).
+
+    Accepts git+https/git+ssh sources and plain https, ssh or scp-like
+    (git@host:org/repo.git) URLs. Refuses a public repository, and asks for
+    --confirm-private when it cannot tell.
+    """
+    target = Path(target).resolve()
+    src = source if lin.valid_source(source) else layers_mod.git_url_to_source(source)
+    if not lin.valid_source(src):
+        raise PublishError(f"not a git URL or layer source: {source!r}")
+    if not lin.is_online_source(src) and not (allow_local or cfg.get("allow_local_source")):
+        raise PublishError(f"{src} is a path on this machine, not an online repository; use the URL of a "
+                           "private repository on your git host", needs="online-source",
+                           how=ONLINE_HOW_PUBLISH)
+    guard = anonymous_readable(src)
+    if guard["public"] is True:
+        raise PublishError(f"refusing {src}: {guard['reason']}. The core must live in a private repository")
+    if guard["public"] is None and not confirm_private:
+        raise PublishError(f"cannot confirm {src} is private ({guard['reason']}); check it yourself, then "
+                           "pass --confirm-private")
+    new = dict(cfg, remote=src)
+    probs = validate_config(new)
+    if probs:
+        raise PublishError("; ".join(probs))
+    paths = _core_paths(new)
+    repo = paths["repo"]
+    if not (repo / ".git").exists():
+        raise PublishError(f"{repo} is not a git repository; run `publish.py init` first")
+    url = layers_mod.source_to_git_url(src)
+    r = _git(repo, "remote", "get-url", "origin", check=False)
+    if r.returncode != 0:
+        _git(repo, "remote", "add", "origin", url)
+        origin = "added"
+    elif same_remote(layers_mod.git_url_to_source(r.stdout.strip()), src):
+        origin = "unchanged"
+    else:
+        _git(repo, "remote", "set-url", "origin", url)
+        origin = "updated"
+    lin.write_json_atomic(config_path(target), new)
+    _append_log(target, "publish-remote", f"{new['layer']['id']} source of truth: {src}")
+    return {"remote": src, "origin": origin, "private_check": guard,
+            "next": "run `publish.py plan`, then apply and push; personas will pin this repository"}
 
 
 def set_visibility(path: Path, visibility: str) -> str:
@@ -1489,6 +1574,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--remote-only", action="store_true")
     g.add_argument("--bundle-only", action="store_true")
 
+    pr = sub.add_parser("remote", help="set the core's online source of truth")
+    common(pr)
+    pr.add_argument("url", help="git+https://..., https://..., or git@host:org/repo.git")
+    pr.add_argument("--confirm-private", action="store_true")
+    pr.add_argument("--allow-local-source", action="store_true")
+
     ps = sub.add_parser("status", help="config, core repo, last publish, bundle state")
     common(ps)
     return ap
@@ -1512,12 +1603,14 @@ def main(argv=None) -> int:
                 out = apply(target, cfg, args.note)
             elif args.cmd == "push":
                 out = push(target, cfg, args.confirm_private, args.remote_only, args.bundle_only)
+            elif args.cmd == "remote":
+                out = set_remote(target, cfg, args.url, args.confirm_private, args.allow_local_source)
             elif args.cmd == "status":
                 out = status(target, cfg)
             else:  # pragma: no cover
                 raise PublishError(f"unknown command {args.cmd}")
     except (PublishError, lin.LineageError, layers_mod.LayerFetchError) as e:
-        _emit({"error": str(e), "command": args.cmd})
+        _emit({"error": str(e), "command": args.cmd, **getattr(e, "extra", {})})
         return 1
     _emit(out)
     return 0

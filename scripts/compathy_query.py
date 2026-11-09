@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stdio MCP server exposing the compathy wiki as tools for Claude Code.
+"""Stdio MCP server exposing the compathy wiki as tools for any MCP client.
 
 Speaks JSON-RPC 2.0 over stdio. Implements only the minimum MCP surface needed
 to expose the wiki as queryable tools:
@@ -57,12 +57,12 @@ The script also supports a non-MCP CLI smoke mode for manual testing:
 
 The output is the tool's JSON result on stdout.
 
-Install (Claude Code)
----------------------
+Install (any MCP client)
+------------------------
 
-After ``python3 scripts/install.py --claude`` symlinks the skill to
-``~/.claude/skills/compathy/``, register the server in your project's
-``.mcp.json`` (or merge into ``~/.claude/.mcp.json``):
+``/compathy`` registers the server in the project's ``.mcp.json`` for you,
+pointing at this file wherever your agent installed compathy. To register
+it by hand (``.mcp.json``, or your agent's own MCP config):
 
     {
       "mcpServers": {
@@ -79,9 +79,9 @@ After ``python3 scripts/install.py --claude`` symlinks the skill to
     }
 
 A copy-paste starter is at ``templates/compathy.mcp.json.tmpl``. Replace
-``${HOME}`` and ``${PROJECT_ROOT}`` with absolute paths (Claude Code does
-not expand env vars in ``args``). If you used ``--workspace`` install or a
-copy install, point the path at your local copy of ``compathy_query.py``.
+``${COMPATHY_DIR}`` (your compathy clone, or wherever your agent's skills
+folder links to it) and ``${PROJECT_ROOT}`` with absolute paths; many MCP
+clients do not expand env vars in ``args``.
 """
 from __future__ import annotations
 
@@ -957,7 +957,7 @@ def serve_stdio(target: Path, stdin=None, stdout=None) -> int:
     """Run the JSON-RPC stdio loop until EOF.
 
     One JSON-RPC message per line ('LSP Content-Length' framing is *not*
-    used; Claude Code's MCP stdio transport is line-delimited). Malformed
+    used; MCP's stdio transport is line-delimited). Malformed
     JSON yields a parse-error response with id=None and the loop continues.
     """
     fin = stdin if stdin is not None else sys.stdin

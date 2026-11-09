@@ -60,7 +60,14 @@ def add_index(target: Path, section: str, entry: str):
 
 
 def run(argv) -> dict:
-    """Run persona.main and return its JSON output."""
+    """Run persona.main and return its JSON output.
+
+    Every layer in these fixtures lives at a local file:// path, so the
+    commands that require an online source of truth get the explicit opt-out
+    (the rule itself is tested in test_publish.TestOnlineSource).
+    """
+    if argv and argv[0] in ("import", "export") and "--allow-local-source" not in argv:
+        argv = [*argv, "--allow-local-source"]
     buf = io.StringIO()
     with redirect_stdout(buf):
         code = persona.main(argv)
@@ -470,7 +477,8 @@ class TestImport(FederationFixture):
         t = self.new_target("viascaffold")
         buf = io.StringIO()
         with redirect_stdout(buf), mock.patch.object(sys, "argv", ["scaffold.py", "--target", str(t),
-                                                                   "--from-persona", "acme/payments/backend-engineer"]):
+                                                                   "--from-persona", "acme/payments/backend-engineer",
+                                                                   "--allow-local-source"]):
             code = scaffold.main()
         self.assertEqual(code, 0, buf.getvalue()[-500:])
         self.assertTrue(paths.lineage_path(t).is_file())

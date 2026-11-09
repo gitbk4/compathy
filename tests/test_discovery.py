@@ -136,14 +136,16 @@ class TestWriteDiscoveryBreadcrumbs(unittest.TestCase):
                 result,
                 {
                     "claude_md": "created",
+                    "agents_md": "created",
                     "readme_md": "created",
                     "mcp_json": "created",
                 },
             )
             self.assertTrue((target / "CLAUDE.md").is_file())
+            self.assertTrue((target / "AGENTS.md").is_file())
             self.assertTrue((target / "README.md").is_file())
-            # Both contain the sentinel pair.
-            for fname in ("CLAUDE.md", "README.md"):
+            # All three contain the sentinel pair, so any agent finds the wiki.
+            for fname in ("CLAUDE.md", "AGENTS.md", "README.md"):
                 text = (target / fname).read_text(encoding="utf-8")
                 self.assertIn(discovery.SENTINEL_START, text)
                 self.assertIn(discovery.SENTINEL_END, text)
@@ -210,12 +212,27 @@ class TestWriteDiscoveryBreadcrumbs(unittest.TestCase):
             (target / "README.md").write_text("# Existing readme\n", encoding="utf-8")
             result = discovery.write_discovery_breadcrumbs(target, "demo")
             self.assertEqual(
-                set(result.keys()), {"claude_md", "readme_md", "mcp_json"}
+                set(result.keys()), {"claude_md", "agents_md", "readme_md", "mcp_json"}
             )
             self.assertEqual(result["claude_md"], "created")
+            self.assertEqual(result["agents_md"], "created")
             self.assertEqual(result["readme_md"], "appended")
             # .mcp.json didn't exist either; should be created.
             self.assertEqual(result["mcp_json"], "created")
+
+    def test_mcp_entry_points_at_this_install(self):
+        # Agent-neutral: the server path is the script next to discovery.py,
+        # not a Claude Code skills folder that other agents do not have.
+        self.assertEqual(discovery.COMPATHY_QUERY_PATH,
+                         Path(discovery.__file__).resolve().parent / "compathy_query.py")
+        self.assertTrue(discovery.COMPATHY_QUERY_PATH.is_file())
+
+    def test_federation_block_tells_any_agent_to_check_freshness(self):
+        lineage = {"layers": [{"id": "acme/core", "role": "team", "pin": "a" * 40, "path": "context"}],
+                   "persona": "acme/core/sales"}
+        text = discovery.render_context_section("demo", lineage, None)
+        self.assertIn("freshness --target . --format line", text)
+        self.assertIn("persona.py", text)
 
 
 # ---------------------------------------------------------------------------

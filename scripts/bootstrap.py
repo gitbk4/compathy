@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit compile hints from the target project: git log, file tree, READMEs, manifests.
 
-Claude reads this JSON to produce an initial wiki on first-run, even when raw/ is empty.
+The agent reads this JSON to produce an initial wiki on first-run, even when raw/ is empty.
 Caps apply to keep the output bounded.
 """
 from __future__ import annotations
