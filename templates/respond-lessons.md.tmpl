@@ -1,0 +1,55 @@
+---
+type: respond-lessons
+schema_version: 1
+created: {{date}}
+updated: {{date}}
+---
+
+# Lessons for the {{project_name}} stand-in
+
+Co-evolved: `/compathy-respond review` proposes, {{owner_name}} approves
+each lesson's text. Read before every tick. Each entry is a `###` heading
+with `- key: value` lines. Nothing here is copied from Slack.
+
+## House answers
+
+Graded answers for recurring questions. They take precedence over fresh
+retrieval when the pattern matches, and count as `high` confidence.
+
+```
+### HA-001: <short name>
+- pattern: <words or phrasings that match>
+- answer: <the approved answer>
+- pages: [<slug>, <slug>]
+- links: [<registry url>]
+- grades: +1 ({{date}}, {{owner_name}})
+```
+
+_(none yet)_
+
+## Do not answer
+
+Patterns to escalate without retrieval, and why.
+
+_(none yet)_
+
+## Clarify first
+
+Patterns where one clarifying question resolved the ambiguity, with the
+question that worked.
+
+_(none yet)_
+
+## Phrasing
+
+Corrections {{owner_name}} made to tone or wording.
+
+_(none yet)_
+
+## Gaps
+
+Asked, not covered by any allowed page. Each names the raw source that
+would close it; the next `/compathy` compile closes the loop once it is
+dropped into `context/raw/`.
+
+_(none yet)_
