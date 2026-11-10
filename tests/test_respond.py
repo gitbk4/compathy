@@ -211,7 +211,7 @@ class TestInitAndCorpus(RespondFixture):
         self.assertEqual(self.run_cmd("sources", "--match", "XYZ789")["count"], 1)
 
     def test_kind_inference_never_auto_shares_unknown_hosts(self):
-        self.assertEqual(respond._kind_for("https://midstreamhealth-my.sharepoint.com/:x:/g/x"), "sharepoint")
+        self.assertEqual(respond._kind_for("https://contoso-my.sharepoint.com/:x:/g/x"), "sharepoint")
         self.assertEqual(respond._kind_for("https://www.hrsa.gov/opa"), "public")
         self.assertEqual(respond._kind_for("https://example.com/doc"), "other")
         self.run_cmd("sources", "set", "--url", "https://example.com/doc", "--status", "unknown", "--via", "seed")

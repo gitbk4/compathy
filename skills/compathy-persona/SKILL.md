@@ -191,7 +191,7 @@ Ask in this order, one at a time, with your harness's interactive prompt:
 1. **fetch** the layers into `~/.compathy/layers/` (read-only cache)?
 2. **link** this project (write `context/lineage.json`, `context/persona.json`,
    an `entities/persona-<role>.md` page, the "Federation" block in CLAUDE.md,
-   AGENTS.md and README)?
+   AGENTS.md and README, and a GEMINI.md that imports AGENTS.md)?
 3. **toolkit**: register the listed MCP servers in `.mcp.json` and print the
    skill install commands?
 4. **watch** (Claude Code): add a SessionStart hook to
@@ -231,7 +231,7 @@ End with:
 ```
 compathy-persona: joined <persona id> [trust N]
   layers:   <org>@<pin> -> <team>@<pin> -> this project
-  linked:   context/lineage.json, context/persona.json, CLAUDE.md, AGENTS.md
+  linked:   context/lineage.json, context/persona.json, CLAUDE.md, AGENTS.md, GEMINI.md
   toolkit:  <N mcp servers registered, M skill commands printed>
   next:     run /compathy to compile this project against its lineage
 ```

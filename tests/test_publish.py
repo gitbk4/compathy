@@ -259,10 +259,16 @@ class TestPublish(Env):
         core = self.root / "core"
         self.assertEqual(git(core, "log", "--format=%s"), f"personas: pin {r['pin'][:12]}\npublish: first publish")
         files = git(core, "ls-files").splitlines()
-        self.assertEqual(sorted(files), [".github/CODEOWNERS", "README.md", "context/personas/index.json",
+        self.assertEqual(sorted(files), [".github/CODEOWNERS", "AGENTS.md", "CLAUDE.md", "GEMINI.md",
+                                         "README.md", "context/personas/index.json",
                                          "context/personas/marketing.json", "context/schema.md",
                                          "context/wiki/concepts/pricing.md", "context/wiki/concepts/tiers.md",
                                          "context/wiki/index.md", "context/wiki/log.md"])
+        agents = (core / "AGENTS.md").read_text()
+        self.assertIn("read-only published layer", agents)
+        self.assertIn("Send corrections to owner@acme.com", agents)
+        self.assertEqual((core / "CLAUDE.md").read_text(), "@AGENTS.md\n")
+        self.assertEqual((core / "GEMINI.md").read_text(), "@./AGENTS.md\n")
         text = (core / "context/wiki/concepts/pricing.md").read_text()
         self.assertIn("Owned by Jane Doe. See the big deal.", text)
         for gone in ("42 percent", "sources:", "related_paths", "/Users/owner", "[[jane-doe]]"):
@@ -723,6 +729,19 @@ class TestNotion(Env):
         r = run(publish, ["notion-record", "--target", str(owner), "--deleted", "tiers", "--synced", "all"])
         self.assertTrue(r["synced_at"])
         self.assertEqual(run(publish, ["notion-plan", "--target", str(owner)])["phase"], "done")
+
+    def test_a_later_publish_rewrites_only_changed_pages(self):
+        owner = self.published()
+        self.linked(owner)
+        run(publish, ["notion-plan", "--target", str(owner)])
+        run(publish, ["notion-record", "--target", str(owner), "--synced", "all"])
+        p = paths.wiki_dir(owner) / "concepts" / "tiers.md"
+        p.write_text(p.read_text().replace("Three tiers.", "Four tiers."))
+        with mock.patch.object(publish, "_today", return_value="2031-01-02"):  # a later day
+            self.assertEqual(run(publish, ["apply", "--target", str(owner), "--note", "later"])["_exit"], 0)
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        self.assertEqual([u["slug"] for u in plan["updates"]], ["tiers"])
+        self.assertIn("2031-01-02", Path(plan["root_update"]["file"]).read_text())
 
     def test_root_names_an_online_remote_and_dirty_core_is_refused(self):
         owner = self.published()

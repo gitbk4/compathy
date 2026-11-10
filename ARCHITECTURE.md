@@ -414,6 +414,10 @@ Design decisions:
    same repository at another location. The mapping is per user, so
    `lineage.json` stays identical for everyone; pins and tree hashes are
    verified exactly as for the remote.
+6. **The core repo instructs agents itself (v0.5.1).** Publish writes an
+   `AGENTS.md` there, with `CLAUDE.md` and `GEMINI.md` importing it, saying
+   the repo is read-only and pointing readers at their own projects, so no
+   agent adds its own instructions file and blocks the next publish.
 
 ### Threat model for publishing
 

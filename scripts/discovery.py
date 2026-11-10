@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Auto-write a "Project context" section into the project's CLAUDE.md,
 AGENTS.md and README.md so coding agents discover the wiki without having
-to be told: Claude Code reads CLAUDE.md, many other agents read AGENTS.md,
-and README.md serves people and anything else.
+to be told: Claude Code reads CLAUDE.md, Codex and many other agents read
+AGENTS.md, GEMINI.md imports AGENTS.md for Gemini CLI, and README.md serves
+people and anything else.
 
 The section is fenced by a sentinel pair (HTML comments) so re-running the
 scaffold against an existing project is idempotent: existing content above
@@ -43,6 +44,9 @@ from paths import (  # noqa: E402
 
 CLAUDE_MD = "CLAUDE.md"
 AGENTS_MD = "AGENTS.md"
+GEMINI_MD = "GEMINI.md"
+# Gemini CLI reads GEMINI.md, not AGENTS.md; one import line points it at the same section.
+GEMINI_POINTER = "@./AGENTS.md"
 README_MD = "README.md"
 MCP_JSON = ".mcp.json"
 SENTINEL_START = "<!-- compathy:context-section START -->"
@@ -315,7 +319,7 @@ def upsert_mcp_json(target: Path) -> str:
 def write_discovery_breadcrumbs(target: Path, project_name: str) -> Dict[str, str]:
     """Write CLAUDE.md, AGENTS.md, README.md, and .mcp.json breadcrumbs at project root.
 
-    Returns a dict with keys 'claude_md', 'agents_md', 'readme_md', and 'mcp_json'. Markdown
+    Returns a dict with keys 'claude_md', 'agents_md', 'gemini_md', 'readme_md', and 'mcp_json'. Markdown
     statuses are 'created' | 'replaced' | 'appended' | 'skipped'. The
     ``mcp_json`` status is 'created' | 'added' | 'replaced' |
     'skipped-malformed' | 'error'.
@@ -330,6 +334,7 @@ def write_discovery_breadcrumbs(target: Path, project_name: str) -> Dict[str, st
     result: Dict[str, str] = {
         "claude_md": "skipped",
         "agents_md": "skipped",
+        "gemini_md": "skipped",
         "readme_md": "skipped",
         "mcp_json": "skipped",
     }
@@ -351,6 +356,13 @@ def write_discovery_breadcrumbs(target: Path, project_name: str) -> Dict[str, st
                 file=sys.stderr,
             )
             result[key] = "skipped"
+
+    gemini = target / GEMINI_MD
+    if _markdown_ok(gemini):
+        try:
+            result["gemini_md"] = upsert_section(gemini, f"{SENTINEL_START}\n{GEMINI_POINTER}\n{SENTINEL_END}")
+        except OSError as e:
+            print(f"[compathy/discovery] warning: failed to write {gemini}: {e}", file=sys.stderr)
 
     try:
         result["mcp_json"] = upsert_mcp_json(target)

@@ -679,6 +679,29 @@ def _render_readme(cfg: dict, roles: list) -> str:
     return "\n".join(lines)
 
 
+# One set of instructions for any coding agent that opens the core repo:
+# Codex and others read AGENTS.md; Claude Code and Gemini CLI import it.
+AGENT_POINTERS = {"CLAUDE.md": "@AGENTS.md\n", "GEMINI.md": "@./AGENTS.md\n"}
+AGENT_FILES = ("AGENTS.md",) + tuple(AGENT_POINTERS)
+
+
+def _render_agents_md(cfg: dict) -> str:
+    layer = cfg["layer"]
+    owner = cfg.get("owner") or {}
+    contact = owner.get("email") or owner.get("name") or "the owner"
+    rel = cfg.get("path") or CONTEXT_DIR
+    return "\n".join([
+        f"# {layer['title']}: read-only published layer", "",
+        f"This repository is a published copy of the {layer['title']}, written by `/compathy-publish` "
+        f"from {_owner_label(cfg)}'s compathy wiki. Every publish replaces `{rel}/`, `README.md` and "
+        "the agent files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`).", "",
+        f"- Do not edit or commit here; the next publish overwrites any change. Send corrections to {contact}.",
+        "- To use this core in your own work, link it from your own project with compathy (see "
+        "`README.md`) instead of working in this folder.",
+        f"- Reading is fine: start at `{rel}/wiki/index.md`, then open only the pages you need. Pages "
+        "use flat-YAML frontmatter and `[[slug]]` links.", ""])
+
+
 def _log_entry(note: Optional[str], counts: dict, changes: dict) -> list:
     summary = note.strip() if note and note.strip() else (
         f"{counts['published']} pages (+{len(changes['added'])} ~{len(changes['changed'])} "
@@ -790,6 +813,8 @@ def build(target: Path, cfg: dict, note: Optional[str] = None) -> dict:
 
     roles = sorted((cfg.get("personas") or {}).keys())
     files["README.md"] = _render_readme(cfg, roles)
+    files["AGENTS.md"] = _render_agents_md(cfg)
+    files.update(AGENT_POINTERS)
     gh = ((cfg.get("owner") or {}).get("github") or "").lstrip("@")
     if gh:
         files[".github/CODEOWNERS"] = f"# Only the owner publishes this layer.\n* @{gh}\n"
@@ -798,7 +823,7 @@ def build(target: Path, cfg: dict, note: Optional[str] = None) -> dict:
     # about, so it gets a log entry. README/schema/lineage-only edits are
     # committed quietly and leave wiki/ (and its tree hash) alone.
     pages_changed = any(changes.values()) or index_text != (old_index or "")
-    other_files = [schema_rel, lineage_rel, "README.md", ".github/CODEOWNERS"]
+    other_files = [schema_rel, lineage_rel, "README.md", ".github/CODEOWNERS", *AGENT_FILES]
     other_changed = any(files.get(r) != _read_existing(paths, r) for r in other_files)
     log_rel = f"{rel}/{WIKI_SUBDIR}/{LOG_FILE}"
     old_log = _read_existing(paths, log_rel)
@@ -814,7 +839,7 @@ def build(target: Path, cfg: dict, note: Optional[str] = None) -> dict:
         log_text += "\n" + "\n".join(_log_entry(note, counts, changes)) + "\n"
     files[log_rel] = log_text
 
-    managed = [f"{rel}/{WIKI_SUBDIR}", schema_rel, lineage_rel, "README.md", ".github/CODEOWNERS"]
+    managed = [f"{rel}/{WIKI_SUBDIR}", schema_rel, lineage_rel, "README.md", ".github/CODEOWNERS", *AGENT_FILES]
     return {"files": files, "managed": managed, "pages": pages, "titles": titles,
             "keep": keep, "counts": counts, "changes": changes, "unchanged": unchanged,
             "unlinked": unlinked, "private_blocks": private_blocks, "dropped_frontmatter": dropped,
@@ -1049,7 +1074,7 @@ def _sync_files(b: dict) -> None:
         for p in sorted(wiki.rglob("*")):
             if p.is_file() and p.resolve() not in keep:
                 p.unlink()
-    for rel in ("README.md", ".github/CODEOWNERS", f"{b['paths']['rel']}/{LINEAGE_FILE}"):
+    for rel in ("README.md", ".github/CODEOWNERS", *AGENT_FILES, f"{b['paths']['rel']}/{LINEAGE_FILE}"):
         p = repo / rel
         if p.is_file() and p.resolve() not in keep:
             p.unlink()
@@ -1694,8 +1719,9 @@ def render_notion_page(cfg: dict, snap: dict, slug: str, ids: dict, root_url: Op
                        base: Optional[str] = None) -> str:
     page = snap["pages"][slug]
     titles = {s: p["title"] for s, p in snap["pages"].items()}
-    published = snap["log"][-1]["date"] if snap["log"] else _today()
-    meta = (f'<p color="gray">Read-only copy from the {cfg["layer"]["title"]}, published {published}. '
+    # Only page-specific facts here: the latest publish date lives on the root
+    # page, so a republish rewrites only the pages that actually changed.
+    meta = (f'<p color="gray">Read-only copy from the {cfg["layer"]["title"]}. '
             f'Page `{slug}` ({page["type"]}, updated {page["updated"] or "unknown"}). '
             + (f"Start from the [index]({root_url})." if root_url else "") + "</p>")
     body = notion_links(_strip_h1(page["body"]), ids, titles, root_url, base)

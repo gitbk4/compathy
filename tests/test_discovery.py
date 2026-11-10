@@ -137,6 +137,7 @@ class TestWriteDiscoveryBreadcrumbs(unittest.TestCase):
                 {
                     "claude_md": "created",
                     "agents_md": "created",
+                    "gemini_md": "created",
                     "readme_md": "created",
                     "mcp_json": "created",
                 },
@@ -144,8 +145,12 @@ class TestWriteDiscoveryBreadcrumbs(unittest.TestCase):
             self.assertTrue((target / "CLAUDE.md").is_file())
             self.assertTrue((target / "AGENTS.md").is_file())
             self.assertTrue((target / "README.md").is_file())
-            # All three contain the sentinel pair, so any agent finds the wiki.
-            for fname in ("CLAUDE.md", "AGENTS.md", "README.md"):
+            # Gemini CLI reads GEMINI.md, which imports AGENTS.md instead of repeating it.
+            gemini = (target / "GEMINI.md").read_text(encoding="utf-8")
+            self.assertIn("@./AGENTS.md", gemini)
+            self.assertNotIn("Project context", gemini)
+            # All of them carry the sentinel pair, so re-runs stay idempotent.
+            for fname in ("CLAUDE.md", "AGENTS.md", "GEMINI.md", "README.md"):
                 text = (target / fname).read_text(encoding="utf-8")
                 self.assertIn(discovery.SENTINEL_START, text)
                 self.assertIn(discovery.SENTINEL_END, text)
@@ -212,7 +217,7 @@ class TestWriteDiscoveryBreadcrumbs(unittest.TestCase):
             (target / "README.md").write_text("# Existing readme\n", encoding="utf-8")
             result = discovery.write_discovery_breadcrumbs(target, "demo")
             self.assertEqual(
-                set(result.keys()), {"claude_md", "agents_md", "readme_md", "mcp_json"}
+                set(result.keys()), {"claude_md", "agents_md", "gemini_md", "readme_md", "mcp_json"}
             )
             self.assertEqual(result["claude_md"], "created")
             self.assertEqual(result["agents_md"], "created")

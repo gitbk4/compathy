@@ -915,6 +915,7 @@ def _link(target: Path, manifest: dict, res: dict, trust: int, args) -> list:
     discovery.write_discovery_breadcrumbs(target, project_name)
     written.append(str(target / discovery.CLAUDE_MD))
     written.append(str(target / discovery.AGENTS_MD))
+    written.append(str(target / discovery.GEMINI_MD))
     home_copy = personas_home_dir() / f"{layer_slug(manifest['id'])}.json"
     lin.write_json_atomic(home_copy, {**manifest, "_imported": {"at": doc["imported_at"], "target": str(target),
                                                                   "origin": res["origin"], "trust": trust}})

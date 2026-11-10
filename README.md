@@ -33,10 +33,11 @@ Based on [Andrej Karpathy's llm-wiki pattern](https://gist.github.com/karpathy/4
 | **compathy-augment** | `/compathy-augment <path>` | Learn from another project's strengths and adopt them |
 | **compathy-persona** | `/compathy-persona <export\|search\|import\|sync\|status\|freshness\|update\|unlink\|whoami>` | Federate wikis across a company: org layer, team layers, and personas that let a member join instantly |
 | **compathy-publish** | `/compathy-publish <init\|mark\|plan\|apply\|push\|status>` | Share a core subset of your wiki; teammates link it read-only into their own wikis and stay current |
+| **compathy-respond** | `/compathy-respond <init\|start\|stop\|status\|review\|replay\|export>` | Answer Slack mentions and DMs for you during a set window, from the wiki, Linear and the calendar; escalate what it is unsure of |
 
 ## Install
 
-Clone once, then use the installer. By default it installs **all five
+Clone once, then use the installer. By default it installs **all six
 skills**. Pick `--claude` or `--antigravity`, or `--dir <skills folder>` for
 any other agent.
 
@@ -74,7 +75,8 @@ python3 scripts/install.py --dir <your agent's skills folder>
 
 The wiki is plain markdown and the `compathy-wiki` MCP server works with any
 MCP client. `/compathy` writes the project context into `CLAUDE.md`,
-`AGENTS.md` and `README.md`, so agents that read any of them find the wiki.
+`AGENTS.md` and `README.md`, plus a `GEMINI.md` that imports `AGENTS.md`
+for Gemini CLI, so agents that read any of them find the wiki.
 
 ### Update or uninstall
 

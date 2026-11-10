@@ -129,7 +129,8 @@ def _append_discovery_log_entry(log_path: Path, result: dict) -> None:
     if not log_path.is_file():
         return
     parts = []
-    for fname, key in (("CLAUDE.md", "claude_md"), ("AGENTS.md", "agents_md"), ("README.md", "readme_md")):
+    for fname, key in (("CLAUDE.md", "claude_md"), ("AGENTS.md", "agents_md"), ("GEMINI.md", "gemini_md"),
+                       ("README.md", "readme_md")):
         status = result.get(key, "skipped")
         if status != "skipped":
             parts.append(f"{fname} {status}")

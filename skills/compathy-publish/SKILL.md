@@ -159,6 +159,9 @@ python3 $P apply --target . --note "<note>"
 
 It writes the core repo, commits the pages (`publish: <note>`), then
 commits the personas pinned to that commit. Nothing leaves the machine.
+The core repo also carries an `AGENTS.md` (with `CLAUDE.md` and `GEMINI.md`
+importing it) telling any agent that opens it that the repo is read-only.
+Publish writes those files too, so never add your own there.
 
 ## Push (a separate yes)
 

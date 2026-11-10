@@ -101,9 +101,9 @@ the Phase 1 smoke test shows task sessions do not carry the connectors, the
 fallback is an in-session loop (`ScheduleWakeup`) bounded by the window.
 
 **Layers.** The skill reads one project's `context/`. For questions that
-span the Pharmacy, Managed Care and Manufacturer wikis, the other two are
+span several of the owner's wikis, the others are
 attached as ad-hoc layers (`compathy_query.py` already supports
-`--layer <dir>`); the corpus filter applies per layer. Pilot: Pharmacy only.
+`--layer <dir>`); the corpus filter applies per layer. Pilot: one wiki only.
 
 ## Data model: `context/respond/` (the companion)
 
@@ -468,7 +468,7 @@ its summary (`respond: window open until ...`) when a window is open.
 
 | Phase | What | Gate to the next |
 |---|---|---|
-| 0. Build | `respond.py`, templates, SKILL.md, tests; `init` on the Pharmacy project; the owner reviews `policy.md`, `deny_slugs` and marks the registry | tests green; registry reviewed |
+| 0. Build | `respond.py`, templates, SKILL.md, tests; `init` on the pilot project; the owner reviews `policy.md`, `deny_slugs` and marks the registry | tests green; registry reviewed |
 | 1. Smoke | the scheduled task runs `tick` in `dry` mode once (do task sessions see Slack, Linear, Calendar and the project MCP?); the escalation route fires to the phone | both confirmed, or the fallbacks chosen |
 | 2. Replay | `replay --days 7`: would-be replies for last week's real mentions and DMs, ledger only; the owner grades them in `review` | the first lessons; no -1 on a would-be answer |
 | 3. Supervised live | a one hour `live` window scoped to one private test channel plus DMs, the owner watching; then a one hour window on all triggers, the owner watching | review with no -1 grade |
@@ -489,8 +489,8 @@ its summary (`respond: window open until ...`) when a window is open.
 
 ## Open decisions (need the owner)
 
-1. **Target wiki**: Pharmacy only for the pilot, with Managed Care and
-   Manufacturer attached as layers in a second step. Agree?
+1. **Target wiki**: one wiki for the pilot, with the owner's other wikis
+   attached as layers in a second step. Agree?
 2. **Escalation route**: A plus B as recommended, or C from the start?
 3. **Scheduling**: scheduled task (persistent, app open) with the
    in-session loop as fallback. Agree?

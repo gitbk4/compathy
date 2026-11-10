@@ -1,3 +1,19 @@
+# v0.5.1: Instructions for every agent, and the Slack stand-in
+
+- The core repo now carries an `AGENTS.md`, written and committed by every
+  publish, telling any agent that opens it that the repo is read-only and
+  where corrections go. `CLAUDE.md` and `GEMINI.md` import it, so Claude
+  Code, Codex and Gemini CLI read the same file. An agent's own instructions
+  file there no longer blocks the next publish, because publish owns it.
+- `/compathy` and `/compathy-persona import` add a `GEMINI.md` next to the
+  `AGENTS.md` they write in a project. It holds one import line, since Gemini
+  CLI reads `GEMINI.md` rather than `AGENTS.md`.
+- Fix: Notion sub-pages no longer carry the core's publish date (the root
+  page does), so a republish rewrites only the pages that changed.
+- New skill, `/compathy-respond`: answers Slack mentions and DMs for you
+  during a set window, only from the wiki, Linear and the calendar;
+  escalates what it is unsure of and grades its answers afterwards.
+
 # v0.5.0: A Notion copy of the core for teammates without git
 
 Teammates without git (on a Mac, usually without Python too) can read the
