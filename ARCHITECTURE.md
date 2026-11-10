@@ -430,6 +430,37 @@ Design decisions:
 | Teammates read a stale core | `freshness` (cached six hours, optional SessionStart hook) and `update`'s page-level report |
 | A leak is pushed anyway | Git keeps history: rewrite it, rotate any secret, ask teammates to re-sync. The diff review and the scan exist to stop this first |
 
+### The Notion copy (v0.5.0)
+
+Teammates without git cannot read a git layer, and on a Mac they usually
+lack Python too: both come with Apple's Command Line Tools. A Drive bundle
+is a git file, so it does not help them either. For them the core is
+copied to Notion, which their agent reads through its Notion connector.
+
+```
+  core repo (committed publish) ── notion-plan ──▶ rendered pages + plan.json
+                                                     │ owner's agent, Notion connector
+                                                     ▼
+  root page: how to use · latest publish · read first by role · index · publish log
+  └── All pages: one sub-page per wiki page ([[links]] point at sub-pages)
+```
+
+Python renders every page from the committed core repo and keeps the
+slug-to-page map in the owner's `context/notion-sync.json`; it never talks
+to Notion and holds no token. Content hashes decide what to rewrite, so a
+republish touches only changed pages and the root page. The scan runs on
+the rendered copy too.
+
+| Risk | Control |
+|---|---|
+| Someone edits the Notion copy | Share the root page view only; before overwriting, the skill reads Notion's version history since the last sync and asks when anyone else edited a page |
+| A Notion reader acts on an old version | Readers always see the latest publish; the root page carries the publish date and log, and the reader's agent compares it with the date in their notes |
+| The copy falls behind the core | `status` says `behind the core repo`; `push` reminds the owner to sync |
+| A removed page lingers in Notion | The plan lists it; it goes to Notion's Trash only after the owner's yes |
+
+Trade-off: Notion readers are not pinned or hash-verified; page
+permissions are the control, and the core repo keeps every publish.
+
 Deliberately not built: redaction by an LLM (non-deterministic and not
 reviewable), encryption of the core (use repository and drive access),
 and automatic pushes.

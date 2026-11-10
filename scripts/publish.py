@@ -14,6 +14,8 @@ which teammates link to as a pinned, read-only parent layer with
     apply  [--note TEXT]           write the build into the core repo; commit content, then personas
     push   [--confirm-private]     push to the remote (public-remote guard) and refresh the bundle
     remote URL [--confirm-private] set the core's online source of truth (config and origin)
+    notion-plan                    what the Notion copy needs next (setup, create, write, done)
+    notion-record [--root URL] [--container URL] [--ids JSON] [--synced all|LIST] [--deleted LIST]
     status                         config, core repo HEAD, last publish, bundle freshness
 
 Every subcommand prints one JSON document; the SKILL.md renders it and asks
@@ -1329,6 +1331,12 @@ def push(target: Path, cfg: dict, confirm_private: bool = False, remote_only: bo
         out["bundle"] = write_bundle(repo, _expand(cfg["bundle"]), branch)
     if out["remote"] is None and out["bundle"] is None:
         raise PublishError("nothing to push to: set 'remote' and/or 'bundle' in publish.json")
+    try:
+        if (load_notion_state(target).get("root") or {}).get("id"):
+            out["notion"] = {"configured": True,
+                             "next": "run publish.py notion-plan and apply it through the Notion connector"}
+    except PublishError:
+        pass
     _append_log(Path(target).resolve(), "publish-push", f"{cfg['layer']['id']} at {head[:12]}",
                 [f"remote: {out['remote']['url']}" if out["remote"] else "remote: (not pushed)",
                  f"bundle: {_bundle_hint(cfg)}" if out["bundle"] else "bundle: (not written)"])
@@ -1507,6 +1515,9 @@ def status(target: Path, cfg: dict) -> dict:
             if m and m.group(2) == "publish":
                 last = {"date": m.group(1), "summary": m.group(3)}
     out["last_publish"] = last
+    nst = notion_status(target, cfg)
+    if nst is not None:
+        out["notion"] = nst
     if head and cfg.get("remote"):
         branch = cfg.get("branch") or DEFAULT_BRANCH
         r = layers_mod.git(["rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"], cwd=repo)
@@ -1525,6 +1536,368 @@ def status(target: Path, cfg: dict) -> dict:
             out["bundle"] = {"path_hint": _bundle_hint(cfg), "head": bhead,
                              "state": "current" if bhead and bhead == head else "stale"}
     return out
+
+
+# ---------- Notion copy (teammates without git) ----------
+#
+# The core repo stays the source of truth. Teammates without git read a
+# Notion copy instead: one root page (how to use it, the latest publish,
+# read-first lists by role, the index, the publish log) and one sub-page per
+# wiki page under a container page. Python renders every page from the
+# committed core repo and keeps the slug -> page id map in the owner's
+# context/notion-sync.json; the owner's agent writes the pages through its
+# Notion connector (Python never talks to Notion and holds no token).
+
+NOTION_STATE_FILE = "notion-sync.json"
+NOTION_STATE_VERSION = 1
+NOTION_CONTAINER_TITLE = "All pages"
+NOTION_URL = "https://app.notion.com/p/"  # the form Notion's connector returns
+NOTION_BASE_RE = re.compile(r"^(https://(?:www\.)?notion\.so/|https://app\.notion\.com/p/)")
+NOTION_ID_RE = re.compile(r"([0-9a-fA-F]{32})$")
+NOTION_LOG_ENTRIES = 10
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# Notion reads <name ...> in prose as one of its own tags (<date>, <page>...);
+# its spec says to escape literal tags as \<tag>. Code is already literal.
+TAG_LIKE_RE = re.compile(r"<(?=[A-Za-z/])")
+
+
+def notion_state_path(target) -> Path:
+    """context/notion-sync.json in the owner's project (local)."""
+    return context_root(target) / NOTION_STATE_FILE
+
+
+def notion_dir(target) -> Path:
+    """context/compathy-reports/notion/: rendered pages and the current plan."""
+    return reports_dir(target) / "notion"
+
+
+def notion_id(value) -> Optional[str]:
+    """A Notion page URL or id (with or without dashes) -> its 32-hex id."""
+    if not isinstance(value, str):
+        return None
+    s = value.strip().split("?", 1)[0].split("#", 1)[0].rstrip("/").replace("-", "")
+    m = NOTION_ID_RE.search(s)
+    return m.group(1).lower() if m else None
+
+
+def notion_url(page_id: str, base: Optional[str] = None) -> str:
+    return (base or NOTION_URL) + page_id
+
+
+def load_notion_state(target) -> dict:
+    path = notion_state_path(target)
+    if not path.is_file():
+        return {"schema_version": NOTION_STATE_VERSION, "root": None, "container": None, "pages": {},
+                "synced_at": None, "core_head": None}
+    data = lin.read_json(path)
+    if not isinstance(data, dict) or data.get("schema_version") != NOTION_STATE_VERSION:
+        raise PublishError(f"{path} is not a notion-sync file this version understands")
+    data.setdefault("pages", {})
+    return data
+
+
+def save_notion_state(target, state: dict) -> None:
+    lin.write_json_atomic(notion_state_path(target), state)
+
+
+def _core_snapshot(cfg: dict) -> dict:
+    """What the committed core repo holds: pages, index order and summaries, publish log, personas."""
+    paths = _core_paths(cfg)
+    repo = paths["repo"]
+    if not (repo / ".git").exists():
+        raise PublishError(f"{repo} is not a git repository; run `publish.py init` and `apply` first")
+    # Only the published context/ matters here; a stray file elsewhere in the
+    # repo (an agent's AGENTS.md, say) changes nothing that Notion receives.
+    if _git(repo, "status", "--porcelain", "--untracked-files=all", "--", paths["rel"]).stdout.strip():
+        raise PublishError(f"{repo}/{paths['rel']} has uncommitted changes; the Notion copy mirrors only "
+                           "committed publishes")
+    head = layers_mod.head_sha(repo)
+    if head is None:
+        raise PublishError("nothing is published yet; run `publish.py apply` first")
+    pages = {}
+    for slug, path in iter_wiki_pages(paths["wiki"]):
+        fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        pages[slug] = {"folder": path.parent.name, "type": fm.get("type") or path.parent.name.rstrip("s"),
+                       "updated": str(fm.get("updated") or ""), "title": _title_of(body, slug), "body": body}
+    order, summaries = [], {}
+    idx = paths["wiki"] / INDEX_FILE
+    if idx.is_file():
+        for line in idx.read_text(encoding="utf-8").splitlines():
+            m = INDEX_LINE_RE.match(line)
+            if m and m.group(1) in pages and m.group(1) not in summaries:
+                order.append(m.group(1))
+                summaries[m.group(1)] = m.group(2).strip()
+    order += sorted(s for s in pages if s not in summaries)
+    log = []
+    lp = paths["wiki"] / LOG_FILE
+    if lp.is_file():
+        for line in lp.read_text(encoding="utf-8").splitlines():
+            m = LOG_ENTRY_RE.match(line)
+            if m and m.group(2) == "publish":
+                log.append({"date": m.group(1), "summary": m.group(3), "details": []})
+            elif log and line.startswith("- "):
+                log[-1]["details"].append(line[2:].strip())
+    personas, pin = [], None
+    if paths["personas"].is_dir():
+        for f in sorted(paths["personas"].glob("*.json")):
+            if f.name == PERSONAS_INDEX_FILE:
+                continue
+            try:
+                m = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            pin = pin or ((m.get("layers") or [{}])[0].get("pin"))
+            reads = [lin.parse_ref(r)[1] for r in m.get("reads_first") or []
+                     if lin.parse_ref(r)[0] == cfg["layer"]["id"]]
+            personas.append({"role": f.stem, "title": m.get("title") or f.stem, "reads_first": reads})
+    return {"head": head, "pin": pin or head, "pages": pages, "order": order, "summaries": summaries,
+            "log": log, "personas": personas}
+
+
+def _md_text(s: str) -> str:
+    return s.replace("[", "\\[").replace("]", "\\]")
+
+
+def notion_links(text: str, ids: dict, titles: dict, root_url: Optional[str],
+                 base: Optional[str] = None) -> str:
+    """Turn [[slug]] links into links to the Notion sub-pages; code is left alone."""
+    def sub(m):
+        slug, _, label = m.group(1).partition("|")
+        slug, label = slug.strip(), label.strip()
+        if slug in GENERATED:
+            name = label or ("the index" if slug == "index" else "the publish log")
+            return f"[{_md_text(name)}]({root_url})" if root_url else name
+        name = label or titles.get(slug) or slug.replace("-", " ")
+        pid = ids.get(slug)
+        return f"[{_md_text(name)}]({notion_url(pid, base)})" if pid else name
+
+    out = []
+    for is_code, chunk in _segments(text):
+        if is_code:
+            out.append(chunk)
+        else:
+            out.append(TAG_LIKE_RE.sub(r"\\<", LINK_RE.sub(sub, HTML_COMMENT_RE.sub("", chunk))))
+    return "".join(out)
+
+
+def _strip_h1(body: str) -> str:
+    lines = body.splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i < len(lines) and lines[i].startswith("# "):
+        i += 1
+    return "\n".join(lines[i:]).strip("\n")
+
+
+def render_notion_page(cfg: dict, snap: dict, slug: str, ids: dict, root_url: Optional[str],
+                       base: Optional[str] = None) -> str:
+    page = snap["pages"][slug]
+    titles = {s: p["title"] for s, p in snap["pages"].items()}
+    published = snap["log"][-1]["date"] if snap["log"] else _today()
+    meta = (f'<p color="gray">Read-only copy from the {cfg["layer"]["title"]}, published {published}. '
+            f'Page `{slug}` ({page["type"]}, updated {page["updated"] or "unknown"}). '
+            + (f"Start from the [index]({root_url})." if root_url else "") + "</p>")
+    body = notion_links(_strip_h1(page["body"]), ids, titles, root_url, base)
+    return f"{meta}\n\n{body}\n"
+
+
+def render_notion_root(cfg: dict, snap: dict, ids: dict, root_url: str, container_url: str,
+                       base: Optional[str] = None) -> str:
+    layer = cfg["layer"]
+    titles = {s: p["title"] for s, p in snap["pages"].items()}
+    owner = _owner_label(cfg)
+
+    def link(slug):
+        return f"[{_md_text(titles[slug])}]({notion_url(ids[slug], base)})" if slug in ids else titles.get(slug, slug)
+
+    latest = snap["log"][-1] if snap["log"] else None
+    lines = [f'<p color="gray">Read-only copy of the {layer["title"]}, published by {owner} with compathy. '
+             f"Do not edit these pages; send corrections to {owner}."
+             + (f" People with git read the same core from {cfg['remote'][len('git+'):]}."
+                if lin.is_online_source(cfg.get("remote")) else "") + "</p>", ""]
+    if latest:
+        lines += [f"**Latest publish:** {latest['date']}, {latest['summary']} "
+                  f"(core commit `{snap['pin'][:12]}`)", ""]
+    lines += ["## How to use this page (for agents)", "",
+              "1. Read the index below first, then open only the pages you need.",
+              "2. Never edit these pages. Keep the user's own notes on their own page and link to these pages.",
+              "3. At the start of each session, compare **Latest publish** with the date recorded in the "
+              "user's notes. If it is newer, read the publish log, tell the user what changed, and check "
+              "their notes that cite the changed pages.", ""]
+    if snap["personas"]:
+        lines += ["## Read first, by role", ""]
+        for p in snap["personas"]:
+            reads = [s for s in p["reads_first"] if s in snap["pages"]]
+            if not reads:
+                continue
+            lines += [f"### {p['title']}", ""] + [f"- {link(s)}" for s in reads] + [""]
+    lines += ["## Index", ""]
+    for sub, heading in zip(WIKI_SUBDIRS, ("Concepts", "Entities", "Summaries", "Patterns")):
+        slugs = [s for s in snap["order"] if snap["pages"][s]["folder"] == sub]
+        if not slugs:
+            continue
+        lines += [f"### {heading}", ""]
+        for s in slugs:
+            summary = notion_links(snap["summaries"].get(s, ""), ids, titles, root_url, base)
+            lines.append(f"- {link(s)}" + (f": {summary}" if summary else ""))
+        lines.append("")
+    if snap["log"]:
+        lines += ["## Publish log", ""]
+        for e in reversed(snap["log"][-NOTION_LOG_ENTRIES:]):
+            lines.append(f"- {e['date']}: {e['summary']}")
+            for d in e["details"]:
+                if d.startswith(("added:", "changed:", "removed:")):
+                    lines.append(f"    - {d}")
+        lines.append("")
+    lines.append(f'<page url="{container_url}">{NOTION_CONTAINER_TITLE}</page>')
+    return "\n".join(lines) + "\n"
+
+
+def notion_plan(target: Path, cfg: dict) -> dict:
+    """What the Notion copy needs next: setup, create, write, or nothing."""
+    target = Path(target).resolve()
+    state = load_notion_state(target)
+    layer = cfg["layer"]
+    if not (state.get("root") or {}).get("id") or not (state.get("container") or {}).get("id"):
+        return {"phase": "setup", "root_title": layer["title"], "container_title": NOTION_CONTAINER_TITLE,
+                "next": ("create the root page (private draft, title as given), then a sub-page titled "
+                         f"'{NOTION_CONTAINER_TITLE}' under it, and record both: publish.py notion-record "
+                         "--root <root url> --container <container url>")}
+    snap = _core_snapshot(cfg)
+    base = state.get("url_base") or NOTION_URL
+    root_url = notion_url(state["root"]["id"], base)
+    container_url = notion_url(state["container"]["id"], base)
+    ids = {s: v["id"] for s, v in state["pages"].items() if isinstance(v, dict) and v.get("id")}
+    missing = [s for s in snap["order"] if s not in ids]
+    if missing:
+        return {"phase": "create", "parent": container_url,
+                "create": [{"slug": s, "title": snap["pages"][s]["title"]} for s in missing],
+                "next": ("create these as empty sub-pages of the container (titles only, one call), then "
+                         "record their ids: publish.py notion-record --ids '{\"<slug>\": \"<url>\", ...}'")}
+    nd = notion_dir(target)
+    if nd.is_dir():
+        shutil.rmtree(nd)
+    nd.mkdir(parents=True, exist_ok=True)
+    updates, findings, shas = [], [], {}
+    for s in snap["order"]:
+        md = render_notion_page(cfg, snap, s, ids, root_url, base)
+        sha = _sha(snap["pages"][s]["title"] + "\n" + md)
+        shas[s] = sha
+        findings += scan_text(f"notion/{s}.md", md, cfg)
+        if state["pages"][s].get("sha") != sha:
+            f = nd / f"{s}.md"
+            f.write_text(md, encoding="utf-8")
+            updates.append({"slug": s, "page": notion_url(ids[s], base), "title": snap["pages"][s]["title"],
+                            "file": str(f), "chars": len(md)})
+    root_md = render_notion_root(cfg, snap, ids, root_url, container_url, base)
+    root_sha = _sha(layer["title"] + "\n" + root_md)
+    findings += scan_text("notion/root.md", root_md, cfg)
+    root_op = None
+    if state["root"].get("sha") != root_sha:
+        rf = nd / "root.md"
+        rf.write_text(root_md, encoding="utf-8")
+        root_op = {"page": root_url, "title": layer["title"], "file": str(rf), "chars": len(root_md)}
+    deletes = [{"slug": s, "page": notion_url(ids[s], base)} for s in sorted(ids) if s not in snap["pages"]]
+    blocking, _, _ = apply_allow(findings, cfg)
+    plan = {"core_head": snap["head"], "pin": snap["pin"], "shas": shas, "root_sha": root_sha,
+            "deletes": [d["slug"] for d in deletes]}
+    lin.write_json_atomic(nd / "plan.json", plan)
+    if blocking:
+        phase = "blocked"
+    elif updates or root_op or deletes:
+        phase = "write"
+    else:
+        phase = "done"
+    out = {"phase": phase, "root": root_url, "updates": updates, "root_update": root_op,
+           "deletes": deletes, "findings": blocking, "core_head": snap["head"],
+           "synced_at": state.get("synced_at")}
+    if phase == "write":
+        out["next"] = ("for each update, replace the sub-page's content with its file; then replace the root "
+                       "page with root.md (it keeps the container's <page> tag); trash deletes only after "
+                       "the owner's yes; record with publish.py notion-record --synced all (and --deleted)")
+    elif phase == "blocked":
+        out["next"] = "the rendered copy has scan findings; fix the source pages and publish again"
+    else:
+        out["next"] = "the Notion copy matches the core"
+    return out
+
+
+def notion_record(target: Path, cfg: dict, root: Optional[str] = None, container: Optional[str] = None,
+                  ids: Optional[str] = None, synced: Optional[str] = None, deleted: Optional[str] = None) -> dict:
+    """Record page ids and what was written, so the next plan writes only changes."""
+    target = Path(target).resolve()
+    state = load_notion_state(target)
+    changed = []
+    for key, value in (("root", root), ("container", container)):
+        if value:
+            pid = notion_id(value)
+            if not pid:
+                raise PublishError(f"--{key}: not a Notion page URL or id: {value!r}")
+            state[key] = {"id": pid, "sha": None}
+            changed.append(key)
+            m = NOTION_BASE_RE.match(value.strip())
+            if key == "root" and m:
+                state["url_base"] = m.group(1)  # link in the form Notion itself uses
+    if ids:
+        try:
+            raw = json.loads(Path(ids).read_text(encoding="utf-8")) if Path(ids).is_file() else json.loads(ids)
+        except (OSError, ValueError) as e:
+            raise PublishError(f"--ids must be a JSON object of slug to page URL or id ({e})") from e
+        if not isinstance(raw, dict):
+            raise PublishError("--ids must be a JSON object of slug to page URL or id")
+        for slug, value in raw.items():
+            pid = notion_id(value)
+            if not lin.SLUG_RE.match(str(slug)) or not pid:
+                raise PublishError(f"--ids: bad entry {slug!r}: {value!r}")
+            state["pages"][slug] = {"id": pid, "sha": None}
+            changed.append(slug)
+    if deleted:
+        for slug in [s.strip() for s in deleted.split(",") if s.strip()]:
+            state["pages"].pop(slug, None)
+            changed.append(f"-{slug}")
+    if synced:
+        pf = notion_dir(target) / "plan.json"
+        if not pf.is_file():
+            raise PublishError("no plan to record; run publish.py notion-plan first")
+        plan = lin.read_json(pf)
+        wanted = list(plan["shas"]) + ["root"] if synced.strip() == "all" else \
+            [s.strip() for s in synced.split(",") if s.strip()]
+        for slug in wanted:
+            if slug == "root":
+                state["root"]["sha"] = plan["root_sha"]
+            elif slug in plan["shas"] and slug in state["pages"]:
+                state["pages"][slug]["sha"] = plan["shas"][slug]
+            else:
+                raise PublishError(f"--synced: {slug!r} is not in the current plan")
+        in_sync = state["root"].get("sha") == plan["root_sha"] and all(
+            state["pages"].get(s, {}).get("sha") == sha for s, sha in plan["shas"].items()) and not any(
+            s in state["pages"] for s in plan.get("deletes", []))
+        if in_sync:
+            state["synced_at"] = _now_iso()
+            state["core_head"] = plan["core_head"]
+            _append_log(target, "publish-notion", f"{cfg['layer']['id']} at {plan['pin'][:12]} copied to Notion",
+                        [f"root: {notion_url(state['root']['id'], state.get('url_base'))}",
+                         f"pages: {len(plan['shas'])}"])
+        changed.append("synced")
+    save_notion_state(target, state)
+    return {"recorded": changed, "pages": len(state["pages"]), "synced_at": state.get("synced_at"),
+            "root": notion_url(state["root"]["id"], state.get("url_base")) if (state.get("root") or {}).get("id") else None,
+            "next": "run publish.py notion-plan again"}
+
+
+def notion_status(target: Path, cfg: dict) -> Optional[dict]:
+    """The Notion copy's state for `status`, or None when there is none."""
+    try:
+        state = load_notion_state(target)
+    except PublishError as e:
+        return {"error": str(e)}
+    if not (state.get("root") or {}).get("id"):
+        return None
+    head = layers_mod.head_sha(_core_paths(cfg)["repo"])
+    return {"root": notion_url(state["root"]["id"], state.get("url_base")), "pages": len(state["pages"]),
+            "synced_at": state.get("synced_at"),
+            "state": "current" if head and state.get("core_head") == head else "behind the core repo"}
 
 
 # ---------- CLI ----------
@@ -1574,6 +1947,16 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--remote-only", action="store_true")
     g.add_argument("--bundle-only", action="store_true")
 
+    pn = sub.add_parser("notion-plan", help="what the Notion copy needs next")
+    common(pn)
+    nr = sub.add_parser("notion-record", help="record Notion page ids and synced pages")
+    common(nr)
+    nr.add_argument("--root")
+    nr.add_argument("--container")
+    nr.add_argument("--ids", help="JSON object (or a file holding one) of slug to page URL or id")
+    nr.add_argument("--synced", help="'all', or a comma list of slugs and/or root")
+    nr.add_argument("--deleted", help="comma list of slugs whose Notion pages were trashed")
+
     pr = sub.add_parser("remote", help="set the core's online source of truth")
     common(pr)
     pr.add_argument("url", help="git+https://..., https://..., or git@host:org/repo.git")
@@ -1603,6 +1986,10 @@ def main(argv=None) -> int:
                 out = apply(target, cfg, args.note)
             elif args.cmd == "push":
                 out = push(target, cfg, args.confirm_private, args.remote_only, args.bundle_only)
+            elif args.cmd == "notion-plan":
+                out = notion_plan(target, cfg)
+            elif args.cmd == "notion-record":
+                out = notion_record(target, cfg, args.root, args.container, args.ids, args.synced, args.deleted)
             elif args.cmd == "remote":
                 out = set_remote(target, cfg, args.url, args.confirm_private, args.allow_local_source)
             elif args.cmd == "status":

@@ -284,6 +284,12 @@ their own pages.
   Teammates pin a commit and verify its tree hash. A bundle in a shared
   drive is a mirror of the same repository (same pins, same checks,
   identical `lineage.json`), read only when the repository is out of reach.
+- **A Notion copy for teammates without git.** `notion-plan` renders a
+  root page (how to use it, the latest publish, read-first lists by role,
+  the index, the publish log) and one sub-page per wiki page. The owner's
+  agent writes them through its Notion connector and `notion-record` keeps
+  the page map, so later syncs rewrite only what changed. Readers install
+  nothing: their agent reads the index first, then only the pages it needs.
 - **Staying current.** `/compathy-persona freshness` (and an optional
   session-start hook) tells a teammate when you have published since their
   pin; `update` lists what changed and which of their pages to revise.

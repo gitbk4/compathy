@@ -28,6 +28,8 @@ and `Q="{skill_dir}/../../scripts/persona.py"`.
 | `apply --note T` | write the core repo and commit content, then personas pinned to it |
 | `push [--confirm-private]` | push to the remote (refused if it is public) and refresh the bundle |
 | `remote <url> [--confirm-private]` | set the core's online source of truth (config and origin; refuses a public repo) |
+| `notion-plan` | what the Notion copy needs next: setup, create, write or done |
+| `notion-record [--root] [--container] [--ids] [--synced] [--deleted]` | record Notion page ids and what was written |
 | `status` | what is marked, the core repo's HEAD, the last publish, the bundle's state |
 
 Every call prints JSON. Exit 1 means `error` holds a message for the owner.
@@ -186,6 +188,55 @@ and the access checklist:
   Manager and Content manager roles to the owner
 - each teammate has git, compathy and, for the bundle, Drive for desktop
 
+## Notion copy (teammates without git)
+
+Teammates without git (on a Mac, usually without Python too) read a Notion
+copy of the core through their agent's Notion connector, with nothing
+installed. The core repo stays the source of truth, and only this loop
+writes the copy, through your Notion connector.
+
+Layout: a root page (how to use it, the latest publish, read first by role,
+the index, the publish log) with a container sub-page, "All pages", that
+holds one sub-page per wiki page.
+
+### Setup (once)
+
+1. Create the root page as a private draft titled as `notion-plan` says
+   (`notion-create-pages` with `creation_mode: "draft"`), then the container
+   under it (parent: the root page, title "All pages").
+2. `python3 $P notion-record --target . --root <root url> --container <container url>`
+3. Tell the owner to share the root page with the readers, view only (people
+   or a teamspace). Sub-pages inherit it. Only the owner edits.
+
+### Sync (after every push)
+
+Run `python3 $P notion-plan --target .`, act on `phase`, and run it again
+until it says `done`:
+
+- `create`: create the listed pages under the container in one
+  `notion-create-pages` call (titles only, `allow_async: false` so the
+  result has their URLs), then `notion-record --ids '{"<slug>": "<url>"}'`.
+- `write`:
+  1. If `synced_at` is set, check `notion-get-version-changes` (start time
+     `synced_at`) on the pages you are about to overwrite. If anyone other
+     than the owner edited one, show what changed and ask before overwriting.
+  2. For each entry in `updates`, `notion-update-page` with
+     `command: "replace_content"` and `new_str` set to the file's text,
+     verbatim. Send several in parallel.
+  3. Then the root page with `root.md`, the same way. It ends with the
+     container's `<page>` tag; if Notion still refuses, fetch the root page
+     and copy the exact tag it shows. Never pass `allow_deleting_content`.
+  4. `deletes`: show the list, and trash those pages (`notion-delete-pages`
+     with `user_confirmed: true`) only after the owner's yes; then
+     `notion-record --deleted <slugs>`.
+  5. `notion-record --synced all`.
+- `blocked`: the rendered copy has scan findings; fix the source pages and
+  publish again.
+- `done`: the copy matches the core.
+
+The first sync writes every page once (about 200 KB of text for a 40-page
+core). Later syncs rewrite only the pages that changed, plus the root page.
+
 ## Republish
 
 The same loop: edit the wiki as usual, `plan`, `apply`, `push`. Teammates'
@@ -207,4 +258,6 @@ and which of their own pages link to them.
    never widen an audience without asking.
 5. **Never push to a public repository**, and never pass
    `--confirm-private` on your own judgment.
+6. **Only the sync loop writes the Notion copy**, with each file's text
+   passed verbatim; trash a Notion page only after the owner's yes.
 6. **No em dashes** in anything you write into the wiki.

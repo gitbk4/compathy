@@ -1,3 +1,22 @@
+# v0.5.0: A Notion copy of the core for teammates without git
+
+Teammates without git (on a Mac, usually without Python too) can read the
+published core in Notion through their agent's Notion connector, with
+nothing installed.
+
+- `publish.py notion-plan` renders a root page (how to use it, the latest
+  publish, read-first lists by role, the index, the publish log) and one
+  sub-page per wiki page from the committed core repo; `notion-record`
+  keeps the slug-to-page map in `context/notion-sync.json`.
+- The owner's agent writes the pages through its Notion connector. Python
+  never talks to Notion and holds no token. After the first sync, only
+  changed pages and the root page are rewritten.
+- `status` shows whether the copy is current and `push` reminds you to sync
+  it. Before overwriting, the skill checks Notion's version history for
+  edits by anyone else and asks.
+- Readers see the latest publish rather than a pinned version, so share the
+  root page view only.
+
 # v0.4.1: Publish a core subset, pinned to an online source of truth
 
 Covers v0.4.0 and v0.4.1.

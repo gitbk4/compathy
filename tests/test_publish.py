@@ -9,6 +9,7 @@ Real git against local file:// remotes and bundles; no network.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -624,6 +625,118 @@ class TestOnlineSource(Env):
         persona._save_mirror(canonical, "git+file://" + str(bundle))  # pylint: disable=protected-access
         self.assertEqual(layers.upstream_head(canonical, timeout=10), git(repo, "rev-parse", "HEAD"))
         self.assertEqual(layers.probe_upstream(canonical, timeout=20)["head"], git(repo, "rev-parse", "HEAD"))
+
+
+
+# ---------- Notion copy ----------
+
+class TestNotion(Env):
+    """Setup, create, write and record: the copy teammates without git read."""
+
+    ROOT = "https://www.notion.so/Acme-pricing-core-" + "a" * 32
+    CONTAINER = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    def published(self) -> Path:
+        owner = self.owner()
+        self.init(owner)
+        self.assertEqual(run(publish, ["apply", "--target", str(owner), "--note", "first"])["_exit"], 0)
+        return owner
+
+    def linked(self, owner: Path) -> dict:
+        """Run setup and create with fake ids; return the slug -> id map."""
+        self.assertEqual(run(publish, ["notion-plan", "--target", str(owner)])["phase"], "setup")
+        r = run(publish, ["notion-record", "--target", str(owner), "--root", self.ROOT, "--container", self.CONTAINER])
+        self.assertEqual(r["recorded"], ["root", "container"])
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        self.assertEqual(plan["phase"], "create")
+        ids = {c["slug"]: hashlib.md5(c["slug"].encode()).hexdigest() for c in plan["create"]}
+        r = run(publish, ["notion-record", "--target", str(owner), "--ids", json.dumps(ids)])
+        self.assertEqual(r["pages"], len(ids))
+        return ids
+
+    def test_literal_tags_in_prose_are_escaped_for_notion(self):
+        out = publish.notion_links("File by <date> and see `<date>` and x < 5 <!-- note -->", {}, {}, None)
+        self.assertEqual(out, "File by \\<date> and see `<date>` and x < 5 ")
+
+    def test_notion_ids(self):
+        self.assertEqual(publish.notion_id(self.ROOT), "a" * 32)
+        self.assertEqual(publish.notion_id(self.CONTAINER), "b" * 32)
+        self.assertEqual(publish.notion_id("https://www.notion.so/x-" + "C" * 32 + "?pvs=4"), "c" * 32)
+        self.assertIsNone(publish.notion_id("https://example.com/page"))
+        self.assertEqual(publish.notion_id("https://app.notion.com/p/" + "d" * 32 + "?pvs=204"), "d" * 32)
+
+    def test_links_follow_the_url_form_notion_returned(self):
+        owner = self.published()
+        run(publish, ["notion-record", "--target", str(owner), "--root", "https://app.notion.com/p/" + "e" * 32 + "?pvs=204",
+                      "--container", "https://app.notion.com/p/" + "f" * 32])
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        run(publish, ["notion-record", "--target", str(owner), "--ids",
+                      json.dumps({c["slug"]: "https://app.notion.com/p/" + hashlib.md5(c["slug"].encode()).hexdigest()
+                                  for c in plan["create"]})])
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        root = Path(plan["root_update"]["file"]).read_text()
+        self.assertEqual(root.strip().splitlines()[-1], '<page url="https://app.notion.com/p/' + "f" * 32 + '">All pages</page>')
+        self.assertTrue(all(u["page"].startswith("https://app.notion.com/p/") for u in plan["updates"]))
+
+    def test_setup_create_write_record_done(self):
+        owner = self.published()
+        ids = self.linked(owner)
+        self.assertEqual(sorted(ids), ["pricing", "tiers"])
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        self.assertEqual((plan["phase"], len(plan["updates"]), plan["findings"]), ("write", 2, []))
+        page = Path(next(u["file"] for u in plan["updates"] if u["slug"] == "pricing")).read_text()
+        self.assertTrue(page.startswith('<p color="gray">Read-only copy from the Acme pricing core'))
+        for gone in ("type: concept", "# Pricing", "42 percent"):
+            self.assertNotIn(gone, page)
+        self.assertIn(f"We sell by [Tiers](https://www.notion.so/{ids['tiers']}).", page)
+        self.assertIn("`[[not-a-link]]`", page)  # code is left alone
+        root = Path(plan["root_update"]["file"]).read_text()
+        self.assertIn("**Latest publish:**", root)
+        self.assertIn(f"### Pricing marketing\n\n- [Pricing](https://www.notion.so/{ids['pricing']})", root)
+        self.assertIn(f"- [Tiers](https://www.notion.so/{ids['tiers']}): the three tiers", root)
+        self.assertNotIn("People with git", root)  # the fixture's remote is a local path
+        self.assertEqual(root.strip().splitlines()[-1], f'<page url="https://www.notion.so/{"b" * 32}">All pages</page>')
+        r = run(publish, ["notion-record", "--target", str(owner), "--synced", "all"])
+        self.assertTrue(r["synced_at"])
+        self.assertEqual(run(publish, ["notion-plan", "--target", str(owner)])["phase"], "done")
+        self.assertEqual(run(publish, ["status", "--target", str(owner)])["notion"]["state"], "current")
+        self.assertIn("publish-notion |", paths.log_path(owner).read_text())
+
+    def test_only_changes_are_rewritten_and_removed_pages_listed(self):
+        owner = self.published()
+        self.linked(owner)
+        run(publish, ["notion-plan", "--target", str(owner)])
+        run(publish, ["notion-record", "--target", str(owner), "--synced", "all"])
+        p = paths.wiki_dir(owner) / "concepts" / "tiers.md"
+        p.write_text(p.read_text().replace("Three tiers.", "Four tiers."))
+        self.assertEqual(run(publish, ["apply", "--target", str(owner), "--note", "four tiers"])["_exit"], 0)
+        self.assertEqual(run(publish, ["status", "--target", str(owner)])["notion"]["state"], "behind the core repo")
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        self.assertEqual([u["slug"] for u in plan["updates"]], ["tiers"])
+        self.assertTrue(plan["root_update"])  # the publish log moved
+        run(publish, ["notion-record", "--target", str(owner), "--synced", "all"])
+        run(publish, ["mark", "tiers", "--visibility", "private", "--target", str(owner)])
+        self.assertEqual(run(publish, ["apply", "--target", str(owner)])["_exit"], 0)
+        plan = run(publish, ["notion-plan", "--target", str(owner)])
+        self.assertEqual([d["slug"] for d in plan["deletes"]], ["tiers"])
+        self.assertIn("pricing", [u["slug"] for u in plan["updates"]])  # its link to tiers became text
+        r = run(publish, ["notion-record", "--target", str(owner), "--deleted", "tiers", "--synced", "all"])
+        self.assertTrue(r["synced_at"])
+        self.assertEqual(run(publish, ["notion-plan", "--target", str(owner)])["phase"], "done")
+
+    def test_root_names_an_online_remote_and_dirty_core_is_refused(self):
+        owner = self.published()
+        self.linked(owner)
+        cfg = publish.load_config(owner)
+        cfg["remote"] = "git+https://github.com/acme/pricing-core.git"
+        root = publish.render_notion_root(cfg, publish._core_snapshot(cfg), {}, self.ROOT,  # pylint: disable=protected-access
+                                          publish.notion_url("b" * 32))
+        self.assertIn("People with git read the same core from https://github.com/acme/pricing-core.git.", root)
+        (self.root / "core" / "AGENTS.md").write_text("an agent's notes")  # outside context/: fine
+        self.assertNotIn("error", run(publish, ["notion-plan", "--target", str(owner)]))
+        (self.root / "core" / "context" / "wiki" / "concepts" / "stray.md").write_text("hand edit")
+        r = run(publish, ["notion-plan", "--target", str(owner)])
+        self.assertIn("uncommitted changes", r["error"])
 
 
 if __name__ == "__main__":
