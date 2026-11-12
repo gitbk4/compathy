@@ -328,16 +328,22 @@ is never lost across compiles.
 - **Python = bookkeeping.** Deterministic file I/O, checksums, graph validation.
 - **The agent = synthesis.** Reading, writing, backlinks, healing. Any LLM
   agent that loads SKILL.md skills can play this part.
-- **Stdlib only.** No dependencies. Works with Python 3.10+.
+- **Stdlib only.** No dependencies. Works with Python 3.9+.
 - **Git-versioned.** The wiki is text. Diff it. Review it in PRs.
 - **Human-editable.** The agent reconciles manual edits rather than clobbering.
 
 ## Requirements
 
-- Python 3.10+
-- Git (optional, but unlocks history-bootstrap and staleness detection)
+- Python 3.9+. On a Mac, `xcode-select --install` adds Apple's command line
+  tools, which include Python 3 and git.
+- Git, to clone this repo, adopt or sync a persona, publish a core, and update
+  compathy. A wiki of your own runs without it, minus the history bootstrap
+  and staleness checks.
 - An agent that loads SKILL.md packages (Claude Code, Antigravity, or any other
   via `install.py --dir`)
+
+Teammates without git or Python can still read a published core through its
+Notion copy, with nothing to install.
 
 ## License
 

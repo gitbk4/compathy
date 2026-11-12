@@ -144,8 +144,11 @@ def _iso(dt: datetime) -> str:
 
 
 def _parse_when(s: str) -> datetime:
+    text = str(s).strip()
+    if text[-1:] in ("Z", "z"):  # Python before 3.11 rejects a trailing Z
+        text = text[:-1] + "+00:00"
     try:
-        dt = datetime.fromisoformat(str(s))
+        dt = datetime.fromisoformat(text)
     except ValueError as e:
         raise Refusal(f"not an ISO date-time: {s!r} ({e})") from e
     if dt.tzinfo is None:

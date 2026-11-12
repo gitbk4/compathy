@@ -170,7 +170,7 @@ simple regex.
 | Scenario | Handling |
 |---|---|
 | No git repo | bootstrap runs without git data; warning printed |
-| Git not installed | bootstrap exits with clear error |
+| Git not installed | bootstrap, ingest and lint run without history; layer fetches stop with "git is not installed or not on PATH" |
 | `.ref` path traversal | rejected before read; error message names the file |
 | Layer pin or wiki tree sha mismatch | fetch aborts in a temp dir; nothing cached, nothing linked |
 | Parent layer not cached | lint warns (`layer-not-cached`), unresolved links become warnings; `sync` fixes |

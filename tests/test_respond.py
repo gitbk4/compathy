@@ -690,5 +690,16 @@ class TestLintRespond(RespondFixture):
         self.assertFalse(any(k.startswith("respond-") for k in kinds))
 
 
+class TestParseWhen(unittest.TestCase):
+    def test_trailing_z_is_utc_on_every_python(self):
+        dt = respond._parse_when("2026-11-12T17:00:00Z")
+        self.assertEqual(dt.utcoffset(), timedelta(0))
+        self.assertEqual(dt.hour, 17)
+
+    def test_bad_value_still_refused(self):
+        with self.assertRaises(respond.Refusal):
+            respond._parse_when("five pm")
+
+
 if __name__ == "__main__":
     unittest.main()
