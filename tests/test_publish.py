@@ -161,6 +161,13 @@ class TestTransforms(unittest.TestCase):
         self.assertEqual(out, "[[keep]] Gone Page label other `[[gone]]`")
         self.assertEqual(unlinked, ["gone", "gone", "other"])
 
+    def test_rewrite_links_drops_a_doubled_the(self):
+        titles = {"review": "The design review", "guide": "The style guide"}
+        body = "Read the [[review]] first. The [[guide]] says so. See [[guide]]. A lathe [[guide]]."
+        out, _ = publish.rewrite_links(body, set(), titles)
+        self.assertEqual(out, "Read the design review first. The style guide says so. "
+                              "See The style guide. A lathe The style guide.")
+
     def test_frontmatter_allowlist(self):
         kept, dropped = publish.filter_frontmatter(
             ["type: concept\n", "sources: [a.pdf]\n", "related_paths: [x/]\n", "visibility: org\n",
@@ -663,6 +670,13 @@ class TestNotion(Env):
     def test_literal_tags_in_prose_are_escaped_for_notion(self):
         out = publish.notion_links("File by <date> and see `<date>` and x < 5 <!-- note -->", {}, {}, None)
         self.assertEqual(out, "File by \\<date> and see `<date>` and x < 5 ")
+
+    def test_notion_links_drop_a_doubled_the(self):
+        root = publish.NOTION_URL + "a" * 32
+        out = publish.notion_links("Per the [[lib]], see the [[index]] or [[index]].",
+                                   {"lib": "c" * 32}, {"lib": "The Release Notes"}, root)
+        self.assertEqual(out, f"Per the [Release Notes]({publish.NOTION_URL}{'c' * 32}), "
+                              f"see the [index]({root}) or [the index]({root}).")
 
     def test_notion_ids(self):
         self.assertEqual(publish.notion_id(self.ROOT), "a" * 32)

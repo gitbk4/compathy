@@ -195,6 +195,20 @@ def _title_of(body: str, slug: str) -> str:
     return slug.replace("-", " ")
 
 
+_TRAILING_THE_RE = re.compile(r"\bthe\s+$", re.IGNORECASE)
+_LEADING_THE_RE = re.compile(r"the\s+", re.IGNORECASE)
+
+
+def _fit_title(title: str, before: str) -> str:
+    """Drop a title's leading "The" when the text just before already says "the",
+    so "the [[design-review]]" reads "the design review"."""
+    if _TRAILING_THE_RE.search(before):
+        m = _LEADING_THE_RE.match(title)
+        if m and m.end() < len(title):
+            return title[m.end():]
+    return title
+
+
 def _expand(p) -> Path:
     return Path(os.path.expanduser(str(p)))
 
@@ -425,7 +439,9 @@ def rewrite_links(body: str, keep: set, titles: dict) -> tuple:
         if slug in keep:
             return m.group(0)
         unlinked.append(slug)
-        return label.strip() if label.strip() else titles.get(slug) or slug.replace("-", " ")
+        if label.strip():
+            return label.strip()
+        return _fit_title(titles.get(slug) or slug.replace("-", " "), m.string[:m.start()])
 
     out = []
     for is_code, text in _segments(body):
@@ -1689,10 +1705,11 @@ def notion_links(text: str, ids: dict, titles: dict, root_url: Optional[str],
     def sub(m):
         slug, _, label = m.group(1).partition("|")
         slug, label = slug.strip(), label.strip()
+        before = m.string[:m.start()]
         if slug in GENERATED:
-            name = label or ("the index" if slug == "index" else "the publish log")
+            name = label or _fit_title("the index" if slug == "index" else "the publish log", before)
             return f"[{_md_text(name)}]({root_url})" if root_url else name
-        name = label or titles.get(slug) or slug.replace("-", " ")
+        name = label or _fit_title(titles.get(slug) or slug.replace("-", " "), before)
         pid = ids.get(slug)
         return f"[{_md_text(name)}]({notion_url(pid, base)})" if pid else name
 
